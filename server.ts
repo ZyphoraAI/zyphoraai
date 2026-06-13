@@ -564,7 +564,7 @@ Convert raw textbook info into highly polished, structured student study notes i
 // Endpoint 6: AI Tutor Chat API
 app.post("/api/tutor/chat", async (req, res) => {
   try {
-    const { messages, mode, learningSupport, context } = req.body;
+    const { messages, mode, learningSupport, context, stream } = req.body;
     if (!messages || !Array.isArray(messages)) {
       return res.status(400).json({ error: "Missing or invalid chat messages list" });
     }
@@ -659,6 +659,48 @@ Behavior / Speed Rules:
     const lastUserMsgText = processedMessages[processedMessages.length - 1]?.parts?.[0]?.text || "";
     const needsSearch = /latest|news|today|yesterday|current|search the web|search google|live info/i.test(lastUserMsgText);
 
+    const streamRequested = stream !== false;
+
+    // Direct single-shot response (ideal for Netlify/static proxy hosting without HTTP chunk streaming support)
+    if (!streamRequested) {
+      console.log("Non-streamed tutor response requested.");
+      let resultText = "";
+
+      if (needsSearch) {
+        try {
+          console.log("User query indicates need for current events search grounding. Querying with search tool...");
+          const response = await ai.models.generateContent({
+            model: "gemini-3.5-flash",
+            contents,
+            config: {
+              systemInstruction,
+              temperature: 0.7,
+              tools: [{ googleSearch: {} }]
+            }
+          });
+          resultText = response.text || "";
+        } catch (searchErr: any) {
+          console.warn("Google Search grounding failed for single-shot response, using standard text generation fallback:", searchErr.message || searchErr);
+        }
+      }
+
+      if (!resultText) {
+        const response = await ai.models.generateContent({
+          model: "gemini-3.5-flash",
+          contents,
+          config: {
+            systemInstruction,
+            temperature: 0.7
+          }
+        });
+        resultText = response.text || "";
+      }
+
+      res.setHeader("Content-Type", "text/plain; charset=utf-8");
+      return res.send(resultText);
+    }
+
+    // Standard streaming response
     res.setHeader("Content-Type", "text/plain; charset=utf-8");
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");
@@ -672,7 +714,7 @@ Behavior / Speed Rules:
         isSearchActive = true;
         console.log("User query indicates need for current events search grounding. Initializing search stream...");
         responseStream = await ai.models.generateContentStream({
-          model: "gemini-3.1-flash-lite",
+          model: "gemini-3.5-flash",
           contents,
           config: {
             systemInstruction,
@@ -688,7 +730,7 @@ Behavior / Speed Rules:
 
     if (!responseStream) {
       responseStream = await ai.models.generateContentStream({
-        model: "gemini-3.1-flash-lite",
+        model: "gemini-3.5-flash",
         contents,
         config: {
           systemInstruction,
@@ -698,7 +740,6 @@ Behavior / Speed Rules:
     }
 
     let hasWritten = false;
-
 
     try {
       for await (const chunk of responseStream) {
@@ -715,7 +756,7 @@ Behavior / Speed Rules:
       if (!hasWritten) {
         try {
           const fallbackStream = await ai.models.generateContentStream({
-            model: "gemini-3.1-flash-lite",
+            model: "gemini-3.5-flash",
             contents,
             config: {
               systemInstruction,

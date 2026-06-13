@@ -427,6 +427,12 @@ How can I help you today? You can **type any question about any topic** directly
     try {
       const contextPayload = getContextPayload();
 
+      // Detect Netlify environment where HTTP streaming is not supported (buffers chunks and times out or returns 404 router fallback)
+      const isNetlify = typeof window !== 'undefined' && (
+        window.location.hostname.endsWith('.netlify.app') || 
+        (!window.location.hostname.includes('.run.app') && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1')
+      );
+
       // Send to server
       const response = await fetch('/api/tutor/chat', {
         method: 'POST',
@@ -435,14 +441,15 @@ How can I help you today? You can **type any question about any topic** directly
           messages: currentMsgHistory,
           mode: currentMode,
           learningSupport,
-          context: contextPayload
+          context: contextPayload,
+          stream: !isNetlify
         })
       });
 
       // Detect content type as HTML (likely Netlify 404/SPA route fallback, or general server crash)
       const contentType = response.headers.get('content-type') || '';
       if (contentType.includes('text/html')) {
-        throw new Error('API returned an HTML document instead of AI text response (likely a 404 Netlify redirection).');
+        throw new Error('API returned an HTML document instead of AI text response. (Redirected to Netlify 404/index fallback because CDN proxies do not support chunked chunk-by-chunk HTTP streaming).');
       }
 
       if (response.status === 404) {
@@ -466,49 +473,77 @@ How can I help you today? You can **type any question about any topic** directly
       const decoder = new TextDecoder("utf-8");
       let streamText = '';
 
-      // Immediately hide loader when response starts streaming
+      // Immediately hide loader when response starts streaming/resolving
       setIsLoading(false);
 
-      if (reader) {
+      if (reader && !isNetlify) {
         let isFirstRealChunk = true;
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          const chunk = decoder.decode(value, { stream: true });
-          
-          if (isFirstRealChunk && chunk.trim()) {
-            isFirstRealChunk = false;
-            if (chunk.trim().startsWith('<')) {
-              throw new Error('Server response starts with an HTML tag (likely a static file redirect or router page).');
-            }
-          }
-
-          streamText += chunk;
-
-          // Update active session locally inside state
-          setSessions(prevSessions => {
-            return prevSessions.map(s => {
-              if (s.id === targetSession!.id) {
-                const messagesList = [...s.messages];
-                const assistIdx = messagesList.findIndex(m => m.id === assistantMsgId);
-                if (assistIdx !== -1) {
-                  messagesList[assistIdx] = { ...messagesList[assistIdx], text: streamText };
-                } else {
-                  messagesList.push({ ...assistantMsg, text: streamText });
-                }
-                return { ...s, messages: messagesList };
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            const chunk = decoder.decode(value, { stream: true });
+            
+            if (isFirstRealChunk && chunk.trim()) {
+              isFirstRealChunk = false;
+              if (chunk.trim().startsWith('<')) {
+                throw new Error('Server response starts with an HTML tag (likely a static file redirect or router page).');
               }
-              return s;
-            });
-          });
-        }
+            }
 
-        // Once fully done, save final state to persist in localStorage
-        setSessions(prevSessions => {
-          saveSessions(prevSessions);
-          return prevSessions;
-        });
+            streamText += chunk;
+
+            // Update active session locally inside state
+            setSessions(prevSessions => {
+              return prevSessions.map(s => {
+                if (s.id === targetSession!.id) {
+                  const messagesList = [...s.messages];
+                  const assistIdx = messagesList.findIndex(m => m.id === assistantMsgId);
+                  if (assistIdx !== -1) {
+                    messagesList[assistIdx] = { ...messagesList[assistIdx], text: streamText };
+                  } else {
+                    messagesList.push({ ...assistantMsg, text: streamText });
+                  }
+                  return { ...s, messages: messagesList };
+                }
+                return s;
+              });
+            });
+          }
+        } catch (readErr) {
+          console.warn("Error inside reader.read() loop. Falling back to response.text(). Error details:", readErr);
+          // Try to fallback to reading as text if reading the body stream failed mid-way
+          if (!streamText) {
+            streamText = await response.text();
+          }
+        }
+      } else {
+        // Direct non-stream text retrieval for Netlify or fallback environments
+        streamText = await response.text();
       }
+
+      if (streamText.trim().startsWith('<')) {
+        throw new Error('Parsed response content starts with HTML. Response was likely a router view instead of raw text.');
+      }
+
+      // Update active session locally inside state with final text
+      setSessions(prevSessions => {
+        const updated = prevSessions.map(s => {
+          if (s.id === targetSession!.id) {
+            const messagesList = [...s.messages];
+            const assistIdx = messagesList.findIndex(m => m.id === assistantMsgId);
+            if (assistIdx !== -1) {
+              messagesList[assistIdx] = { ...messagesList[assistIdx], text: streamText };
+            } else {
+              messagesList.push({ ...assistantMsg, text: streamText });
+            }
+            return { ...s, messages: messagesList };
+          }
+          return s;
+        });
+        saveSessions(updated);
+        return updated;
+      });
     } catch (e: any) {
       console.error(e);
       addToast(`Tutor could not respond: ${e.message}`, 'error');
