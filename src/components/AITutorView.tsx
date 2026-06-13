@@ -439,9 +439,27 @@ How can I help you today? You can **type any question about any topic** directly
         })
       });
 
+      // Detect content type as HTML (likely Netlify 404/SPA route fallback, or general server crash)
+      const contentType = response.headers.get('content-type') || '';
+      if (contentType.includes('text/html')) {
+        throw new Error('API returned an HTML document instead of AI text response (likely a 404 Netlify redirection).');
+      }
+
+      if (response.status === 404) {
+        throw new Error('AI Tutor server endpoint not found (404). Please ensure the backend is active.');
+      }
+
+      if (response.status === 503) {
+        throw new Error('AI Tutor client not initialized (503). Ensure process.env.GEMINI_API_KEY is configured under Secrets.');
+      }
+
+      if (response.status >= 500) {
+        throw new Error(`AI Tutor internal server error (status ${response.status}).`);
+      }
+
       if (!response.ok) {
         const errText = await response.text();
-        throw new Error(errText || 'Generation failed');
+        throw new Error(errText || `Request failed with status ${response.status}`);
       }
 
       const reader = response.body?.getReader();
@@ -452,10 +470,19 @@ How can I help you today? You can **type any question about any topic** directly
       setIsLoading(false);
 
       if (reader) {
+        let isFirstRealChunk = true;
         while (true) {
           const { done, value } = await reader.read();
           if (done) break;
           const chunk = decoder.decode(value, { stream: true });
+          
+          if (isFirstRealChunk && chunk.trim()) {
+            isFirstRealChunk = false;
+            if (chunk.trim().startsWith('<')) {
+              throw new Error('Server response starts with an HTML tag (likely a static file redirect or router page).');
+            }
+          }
+
           streamText += chunk;
 
           // Update active session locally inside state
@@ -489,17 +516,25 @@ How can I help you today? You can **type any question about any topic** directly
       // Let user retry by keeping text
       if (!textToSend) setInputMessage(rawText);
 
-      // Clean up empty assistant message if response failed completely before starting
+      // Populate user friendly explanation in the bubble instead of leaving it empty or showing HTML
+      const fallbackErrorMessage = `⚠️ **AI Tutor Service Unavailable**\n\nThere was an unexpected issue retrieving a response from Zyphora AI Tutor. This could be due to:\n- A temporary network outage\n- Stale host or workspace backend paths on Netlify\n- An unhandled internal server error (500)\n\n**Details:** ${e.message || "Unknown error"}\n\n*Please type your message again or click Retry. If you are running on Netlify, make sure the API routes are properly proxied to your active cloud server backend.*`;
+
       setSessions(prevSessions => {
-        const cleaned = prevSessions.map(s => {
+        const updated = prevSessions.map(s => {
           if (s.id === targetSession!.id) {
-            const list = s.messages.filter(m => m.id !== assistantMsgId || m.text.trim().length > 0);
-            return { ...s, messages: list };
+            const messagesList = [...s.messages];
+            const assistIdx = messagesList.findIndex(m => m.id === assistantMsgId);
+            if (assistIdx !== -1) {
+              messagesList[assistIdx] = { ...messagesList[assistIdx], text: fallbackErrorMessage };
+            } else {
+              messagesList.push({ ...assistantMsg, text: fallbackErrorMessage });
+            }
+            return { ...s, messages: messagesList };
           }
           return s;
         });
-        saveSessions(cleaned);
-        return cleaned;
+        saveSessions(updated);
+        return updated;
       });
     } finally {
       setIsLoading(false);

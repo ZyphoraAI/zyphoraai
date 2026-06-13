@@ -597,6 +597,11 @@ export default function StudyLibraryView({
         body: JSON.stringify({ notes: textBody, title: titlePattern })
       });
 
+      const contentType = response.headers.get('content-type') || '';
+      if (contentType.includes('text/html')) {
+        throw new Error('Server returned an HTML page instead of study resources. Please verify that your backend API is active.');
+      }
+
       if (!response.ok) {
         throw new Error(`Endpoint returned status ${response.status}`);
       }

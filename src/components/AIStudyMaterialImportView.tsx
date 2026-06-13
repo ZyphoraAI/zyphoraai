@@ -303,9 +303,18 @@ export default function AIStudyMaterialImportView({
         })
       });
 
+      const contentType = response.headers.get('content-type') || '';
+      if (contentType.includes('text/html')) {
+        throw new Error('Server returned an HTML response instead of analyzed study data. Please check if your backend API is active under this domain.');
+      }
+
       if (!response.ok) {
-        const errorData = await response.json();
-        throw new Error(errorData.error || "Internal Server text extraction failure");
+        let errorMsg = "Internal Server text extraction failure";
+        try {
+          const errorData = await response.json();
+          errorMsg = errorData.error || errorMsg;
+        } catch (jsonErr) {}
+        throw new Error(errorMsg);
       }
 
       const result: AnalyzedResult = await response.json();
@@ -432,6 +441,11 @@ export default function AIStudyMaterialImportView({
             studyMode: studyMode
           })
         });
+
+        const contentType = response.headers.get('content-type') || '';
+        if (contentType.includes('text/html')) {
+          throw new Error(`Server returned an HTML page instead of generated study materials for resource type "${type}".`);
+        }
 
         if (!response.ok) {
           throw new Error(`Failed synthesizing study materials for type: ${type}`);

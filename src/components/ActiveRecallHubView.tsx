@@ -380,6 +380,11 @@ export default function ActiveRecallHubView({ addToast, subjects = [], onRecallS
         body: JSON.stringify({ notes: noteContentInput })
       });
 
+      const contentType = response.headers.get('content-type') || '';
+      if (contentType.includes('text/html')) {
+        throw new Error('Server returned an HTML page instead of study materials. Please check if your backend API is active.');
+      }
+
       if (!response.ok) {
         throw new Error(`Server returned ${response.status}`);
       }
