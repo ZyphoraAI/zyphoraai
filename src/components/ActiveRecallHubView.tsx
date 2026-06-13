@@ -165,7 +165,7 @@ export default function ActiveRecallHubView({ addToast, subjects = [], onRecallS
     }
 
     if (loadedNotes.length === 0) {
-      loadedNotes = [DEFAULT_NOTE];
+      loadedNotes = [];
       localStorage.setItem('recall_study_notes', JSON.stringify(loadedNotes));
     }
     setSavedNotes(loadedNotes);
@@ -180,16 +180,6 @@ export default function ActiveRecallHubView({ addToast, subjects = [], onRecallS
         console.error('Failed to parse generated materials', err);
       }
     }
-
-    // Embed default materials if not yet customized
-    if (!loadedMaterial['default_note_active_recall']) {
-      loadedMaterial['default_note_active_recall'] = {
-        questions: DEFAULT_QUESTIONS,
-        flashcards: DEFAULT_FLASHCARDS,
-        quizzes: [DEFAULT_QUIZ]
-      };
-      localStorage.setItem('recall_generated_material', JSON.stringify(loadedMaterial));
-    }
     setGeneratedMaterial(loadedMaterial);
 
     // Initial setup with active note
@@ -203,6 +193,13 @@ export default function ActiveRecallHubView({ addToast, subjects = [], onRecallS
       setQuestions(material.questions);
       setFlashcards(material.flashcards);
       setQuizzes(material.quizzes);
+    } else {
+      setActiveNoteId('');
+      setNoteTitleInput('');
+      setNoteContentInput('');
+      setQuestions([]);
+      setFlashcards([]);
+      setQuizzes([]);
     }
 
     // Ping check server health / API support
@@ -854,8 +851,30 @@ export default function ActiveRecallHubView({ addToast, subjects = [], onRecallS
           {/* Active Tab rendering viewport container slots */}
           <div className="bg-white/5 border border-white/10 rounded-2xl p-6 shadow-xl backdrop-blur-md min-h-[380px] flex flex-col justify-between">
             
-            {/* Notes Editor Canvas Viewport */}
-            {activeTab === 'editor' && (
+            {savedNotes.length === 0 ? (
+              <div className="flex flex-col items-center justify-center text-center p-8 border border-dashed border-white/10 rounded-2xl bg-white/[0.02] space-y-4 py-16 flex-1 w-full my-auto">
+                <div className="p-4 bg-indigo-500/10 text-indigo-400 rounded-full">
+                  <FileText size={32} />
+                </div>
+                <div className="space-y-1.5 max-w-sm">
+                  <h3 className="font-display font-bold text-white text-base">No study notes created yet</h3>
+                  <p className="text-xs text-slate-400 font-sans leading-relaxed">
+                    Choose or create a topic folder on the left pane and write down or paste your outlines. Zyphora will automatically compile interactive quizzes, questions, and revision cards for you.
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={handleAddNewNote}
+                  className="px-5 py-2.5 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-500 rounded-xl shadow-lg transition duration-200 cursor-pointer flex items-center gap-1.5"
+                >
+                  <Plus size={14} />
+                  <span>Create First Notes Workspace</span>
+                </button>
+              </div>
+            ) : (
+              <>
+                {/* Notes Editor Canvas Viewport */}
+                {activeTab === 'editor' && (
               <div className="space-y-4 h-full flex flex-col justify-between animate-fade-in flex-1">
                 <div className="space-y-3 flex-1 flex flex-col">
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -1484,6 +1503,8 @@ export default function ActiveRecallHubView({ addToast, subjects = [], onRecallS
                   </div>
                 )}
               </div>
+            )}
+            </>
             )}
 
           </div>

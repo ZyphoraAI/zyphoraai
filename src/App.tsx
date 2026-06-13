@@ -18,6 +18,7 @@ import UniversalSearchModal from './components/UniversalSearchModal';
 import BackupRestoreView from './components/BackupRestoreView';
 import AITutorView from './components/AITutorView';
 import LandingPageView from './components/LandingPageView';
+import FirstTimeOnboardingModal from './components/FirstTimeOnboardingModal';
 
 interface Toast {
   id: string;
@@ -32,6 +33,7 @@ function LayoutIntegrityMonitor() {
 
 export default function App() {
   const [showLanding, setShowLanding] = useState<boolean>(true);
+  const [showOnboarding, setShowOnboarding] = useState<boolean>(false);
   const [activeView, setActiveView] = useState<'dashboard' | 'tasks' | 'planner' | 'recall' | 'revision' | 'library' | 'import' | 'backup' | 'tutor'>('dashboard');
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [plannerActiveTab, setPlannerActiveTab] = useState<'sessions' | 'subjects' | 'timetable' | 'exams' | 'logs'>('sessions');
@@ -117,10 +119,33 @@ export default function App() {
         console.error('Failed to restore stats metadata', err);
       }
     } else {
-      setTotalFlashcards(3);
-      setTotalQuizzes(1);
+      setTotalFlashcards(0);
+      setTotalQuizzes(0);
     }
   }, []);
+
+  useEffect(() => {
+    if (!showLanding) {
+      const onboardingCompleted = localStorage.getItem('zyphora_onboarding_completed');
+      if (!onboardingCompleted && subjects.length === 0) {
+        setShowOnboarding(true);
+      }
+    }
+  }, [showLanding, subjects]);
+
+  const handleOnboardingComplete = (firstSubject: Subject) => {
+    const updatedSubjects = [firstSubject];
+    handleSetSubjects(updatedSubjects);
+    localStorage.setItem('zyphora_onboarding_completed', 'true');
+    setShowOnboarding(false);
+    addToast(`Course Subject "${firstSubject.name}" created successfully! 🚀 Welcome to Zyphora.`, 'success');
+  };
+
+  const handleOnboardingSkip = () => {
+    localStorage.setItem('zyphora_onboarding_completed', 'true');
+    setShowOnboarding(false);
+    addToast("Welcome to Zyphora! Tap '+ Course Subject' in Study Planner to organize.", 'info');
+  };
 
   // Sync to localStorage on updates
   const handleSetTasks = (newTasks: Task[]) => {
@@ -1024,6 +1049,11 @@ export default function App() {
         setSearchLibraryChapterId={setSearchLibraryChapterId}
         setSearchLibraryTopicId={setSearchLibraryTopicId}
         setSearchLibraryNoteId={setSearchLibraryNoteId}
+      />
+      <FirstTimeOnboardingModal
+        isOpen={showOnboarding}
+        onComplete={handleOnboardingComplete}
+        onSkip={handleOnboardingSkip}
       />
       {/* Layout Integrity Monitor removed to clean up layout */}
     </div>
