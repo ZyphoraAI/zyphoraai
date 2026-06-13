@@ -1,0 +1,6 @@
+{
+  "name": "Zyphora",
+  "description": "A comprehensive study suite with Active Recall and AI assistance.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
