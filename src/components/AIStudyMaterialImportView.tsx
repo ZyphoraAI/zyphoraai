@@ -6,6 +6,7 @@ import {
   CheckSquare, Square, Brain, FileBox, Layers, Calendar, Play, RotateCcw, Check
 } from 'lucide-react';
 import { Subject, RecallQuestion, RecallFlashcard, RecallQuiz, QuizQuestion } from '../types';
+import { getApiUrl } from './AITutorView';
 
 interface AIStudyMaterialImportProps {
   subjects: Subject[];
@@ -291,7 +292,7 @@ export default function AIStudyMaterialImportView({
     try {
       const base64Str = await convertFileToBase64(selectedFile);
       
-      const response = await fetch('/api/import/analyze', {
+      const response = await fetch(getApiUrl('/api/import/analyze'), {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -431,7 +432,7 @@ export default function AIStudyMaterialImportView({
     try {
       // Execute generators in parallel to stay quick
       const promises = requestedTypes.map(async (type) => {
-        const response = await fetch('/api/import/generate-study', {
+        const response = await fetch(getApiUrl('/api/import/generate-study'), {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({

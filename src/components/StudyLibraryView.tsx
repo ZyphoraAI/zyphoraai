@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 import { Subject, Chapter, Topic, SavedNote } from '../types';
 import StudyOrganizerTree from './StudyOrganizerTree';
+import { getApiUrl } from './AITutorView';
 import StudyOrganizerActiveStudy from './StudyOrganizerActiveStudy';
 
 interface StudyLibraryViewProps {
@@ -591,7 +592,7 @@ export default function StudyLibraryView({
       else if (type === 'flashcards') endpoint = '/api/recall/flashcards';
       else if (type === 'quiz') endpoint = '/api/recall/quiz';
 
-      const response = await fetch(endpoint, {
+      const response = await fetch(getApiUrl(endpoint), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ notes: textBody, title: titlePattern })

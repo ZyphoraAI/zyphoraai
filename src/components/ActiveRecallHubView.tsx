@@ -5,6 +5,7 @@ import {
   BookOpen, ChevronRight, AlertTriangle, RotateCcw, PenTool, Check, FileText, Calendar
 } from 'lucide-react';
 import { RecallQuestion, RecallFlashcard, RecallQuiz, QuizQuestion, Subject } from '../types';
+import { getApiUrl } from './AITutorView';
 
 interface SavedNote {
   id: string;
@@ -203,7 +204,7 @@ export default function ActiveRecallHubView({ addToast, subjects = [], onRecallS
     }
 
     // Ping check server health / API support
-    fetch('/api/health')
+    fetch(getApiUrl('/api/health'))
       .then(r => r.json())
       .then(data => {
         if (data.geminiKeyPresent === false) {
@@ -374,7 +375,7 @@ export default function ActiveRecallHubView({ addToast, subjects = [], onRecallS
       else if (type === 'flashcards') endpoint = '/api/recall/flashcards';
       else if (type === 'quiz') endpoint = '/api/recall/quiz';
 
-      const response = await fetch(endpoint, {
+      const response = await fetch(getApiUrl(endpoint), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ notes: noteContentInput })

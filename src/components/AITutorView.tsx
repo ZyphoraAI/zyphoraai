@@ -7,6 +7,19 @@ import {
 } from 'lucide-react';
 import { Subject, Chapter, Topic, SavedNote, TutorSession, TutorChatMessage } from '../types';
 
+export const getApiUrl = (endpoint: string): string => {
+  const isLocalOrSandbox = typeof window !== 'undefined' && (
+    window.location.hostname === 'localhost' ||
+    window.location.hostname === '127.0.0.1' ||
+    window.location.hostname.includes('.run.app')
+  );
+  if (isLocalOrSandbox) {
+    return endpoint;
+  }
+  // Route to the deployed Cloud Run endpoint for Netlify/static hosting environments
+  return `https://ais-pre-xbwyyxmvozyt2g2qyhovvv-246053219887.asia-southeast1.run.app${endpoint}`;
+};
+
 interface AITutorViewProps {
   addToast: (message: string, type?: 'success' | 'info' | 'warning' | 'error') => void;
   subjects: Subject[];
@@ -434,7 +447,7 @@ How can I help you today? You can **type any question about any topic** directly
       );
 
       // Send to server
-      const response = await fetch('/api/tutor/chat', {
+      const response = await fetch(getApiUrl('/api/tutor/chat'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({

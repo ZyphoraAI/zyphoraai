@@ -562,7 +562,7 @@ Convert raw textbook info into highly polished, structured student study notes i
 });
 
 // Endpoint 6: AI Tutor Chat API
-app.post("/api/tutor/chat", async (req, res) => {
+app.post(["/api/tutor/chat", "/api/chat", "/chat"], async (req, res) => {
   try {
     const { messages, mode, learningSupport, context, stream } = req.body;
     if (!messages || !Array.isArray(messages)) {
