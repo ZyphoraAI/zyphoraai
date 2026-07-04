@@ -488,70 +488,78 @@ How can I help you today? You can **type any question about any topic** directly
         throw new Error(errText || `Request failed with status ${response.status}`);
       }
 
-      const reader = response.body?.getReader();
-      const decoder = new TextDecoder("utf-8");
-      let streamText = '';
-
-      // Immediately hide loader when response starts streaming/resolving
+      // Immediately hide loader when response starts resolving
       setIsLoading(false);
 
-      if (reader && !isNetlify) {
-        let isFirstRealChunk = true;
+      let finalText = '';
+
+      if (contentType.includes('application/json')) {
         try {
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            const chunk = decoder.decode(value, { stream: true });
-            
-            if (isFirstRealChunk && chunk.trim()) {
-              isFirstRealChunk = false;
-              if (chunk.trim().startsWith('<')) {
-                throw new Error('Server response starts with an HTML tag (likely a static file redirect or router page).');
-              }
-            }
-
-            streamText += chunk;
-
-            // Update active session locally inside state
-            setSessions(prevSessions => {
-              return prevSessions.map(s => {
-                if (s.id === targetSession!.id) {
-                  const messagesList = [...s.messages];
-                  const assistIdx = messagesList.findIndex(m => m.id === assistantMsgId);
-                  if (assistIdx !== -1) {
-                    messagesList[assistIdx] = { ...messagesList[assistIdx], text: streamText };
-                  } else {
-                    messagesList.push({ ...assistantMsg, text: streamText });
-                  }
-                  return { ...s, messages: messagesList };
-                }
-                return s;
-              });
-            });
-          }
-        } catch (readErr) {
-          console.warn("Error inside reader.read() loop. Falling back to response.text(). Error details:", readErr);
-          // Try to fallback to reading as text if reading the body stream failed mid-way
-          if (!streamText) {
-            streamText = await response.text();
-          }
+          const parsed = await response.json();
+          finalText = parsed.response || parsed.text || parsed.reply || parsed.message || JSON.stringify(parsed);
+        } catch (jsonErr: any) {
+          console.warn("Failed to parse JSON response content:", jsonErr);
+          throw new Error(`Failed to parse AI response as JSON: ${jsonErr.message}`);
         }
       } else {
-        // Direct non-stream text retrieval for Netlify or fallback environments
-        streamText = await response.text();
-      }
+        const reader = response.body?.getReader();
+        const decoder = new TextDecoder("utf-8");
+        let streamText = '';
 
-      if (streamText.trim().startsWith('<')) {
-        throw new Error('Parsed response content starts with HTML. Response was likely a router view instead of raw text.');
-      }
+        if (reader && !isNetlify) {
+          let isFirstRealChunk = true;
+          try {
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              const chunk = decoder.decode(value, { stream: true });
+              
+              if (isFirstRealChunk && chunk.trim()) {
+                isFirstRealChunk = false;
+                if (chunk.trim().startsWith('<')) {
+                  throw new Error('Server response starts with an HTML tag (likely a static file redirect or router page).');
+                }
+              }
 
-      let finalText = streamText;
-      if (streamText.trim().startsWith('{')) {
-        try {
-          const parsed = JSON.parse(streamText);
-          finalText = parsed.response || parsed.text || parsed.reply || parsed.message || streamText;
-        } catch (jsonErr) {
-          console.warn("Response started with { but could not be parsed as JSON:", jsonErr);
+              streamText += chunk;
+
+              // Update active session locally inside state with the stream so far
+              setSessions(prevSessions => {
+                return prevSessions.map(s => {
+                  if (s.id === targetSession!.id) {
+                    const messagesList = [...s.messages];
+                    const assistIdx = messagesList.findIndex(m => m.id === assistantMsgId);
+                    if (assistIdx !== -1) {
+                      messagesList[assistIdx] = { ...messagesList[assistIdx], text: streamText };
+                    } else {
+                      messagesList.push({ ...assistantMsg, text: streamText });
+                    }
+                    return { ...s, messages: messagesList };
+                  }
+                  return s;
+                });
+              });
+            }
+          } catch (readErr) {
+            console.warn("Error inside reader.read() loop. Falling back to text if empty. Error details:", readErr);
+          }
+          finalText = streamText;
+        } else {
+          // Direct non-stream text retrieval for Netlify or fallback environments
+          finalText = await response.text();
+        }
+
+        if (finalText.trim().startsWith('<')) {
+          throw new Error('Parsed response content starts with HTML. Response was likely a router view instead of raw text.');
+        }
+
+        if (finalText.trim().startsWith('{')) {
+          try {
+            const parsed = JSON.parse(finalText);
+            finalText = parsed.response || parsed.text || parsed.reply || parsed.message || finalText;
+          } catch (jsonErr) {
+            console.warn("Response started with { but could not be parsed as JSON:", jsonErr);
+          }
         }
       }
 
