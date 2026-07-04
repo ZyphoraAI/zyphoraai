@@ -13,6 +13,12 @@ export const getApiUrl = (endpoint: string): string => {
     window.location.hostname === '127.0.0.1' ||
     window.location.hostname.includes('.run.app')
   );
+  if (endpoint.startsWith('/.netlify/functions/')) {
+    if (isLocalOrSandbox) {
+      return '/api/tutor/chat';
+    }
+    return endpoint;
+  }
   if (isLocalOrSandbox) {
     return endpoint;
   }
@@ -447,7 +453,7 @@ How can I help you today? You can **type any question about any topic** directly
       );
 
       // Send to server
-      const response = await fetch(getApiUrl('/api/tutor/chat'), {
+      const response = await fetch(getApiUrl('/.netlify/functions/chat'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -539,6 +545,16 @@ How can I help you today? You can **type any question about any topic** directly
         throw new Error('Parsed response content starts with HTML. Response was likely a router view instead of raw text.');
       }
 
+      let finalText = streamText;
+      if (streamText.trim().startsWith('{')) {
+        try {
+          const parsed = JSON.parse(streamText);
+          finalText = parsed.response || parsed.text || parsed.reply || parsed.message || streamText;
+        } catch (jsonErr) {
+          console.warn("Response started with { but could not be parsed as JSON:", jsonErr);
+        }
+      }
+
       // Update active session locally inside state with final text
       setSessions(prevSessions => {
         const updated = prevSessions.map(s => {
@@ -546,9 +562,9 @@ How can I help you today? You can **type any question about any topic** directly
             const messagesList = [...s.messages];
             const assistIdx = messagesList.findIndex(m => m.id === assistantMsgId);
             if (assistIdx !== -1) {
-              messagesList[assistIdx] = { ...messagesList[assistIdx], text: streamText };
+              messagesList[assistIdx] = { ...messagesList[assistIdx], text: finalText };
             } else {
-              messagesList.push({ ...assistantMsg, text: streamText });
+              messagesList.push({ ...assistantMsg, text: finalText });
             }
             return { ...s, messages: messagesList };
           }
