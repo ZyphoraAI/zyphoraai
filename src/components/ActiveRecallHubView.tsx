@@ -149,6 +149,18 @@ export default function ActiveRecallHubView({ addToast, subjects = [], onRecallS
   const [quizLayoutMode, setQuizLayoutMode] = useState<'all' | 'focused'>('all');
   const [currentQuizQuestionIndex, setCurrentQuizQuestionIndex] = useState<Record<string, number>>({});
 
+  // AI Explanations & mode state
+  const [quizModeState, setQuizModeState] = useState<Record<string, 'learning' | 'exam'>>({});
+  const [explanationsCache, setExplanationsCache] = useState<Record<string, {
+    correctAnswerExplanation: string;
+    incorrectOptionsExplanations: string[];
+    memoryTip: string;
+    realWorldExample: string;
+    loading?: boolean;
+    error?: string;
+  }>>({});
+  const [generatingFlashcardForQ, setGeneratingFlashcardForQ] = useState<Record<string, boolean>>({});
+
   // Active status indicator (checks if server has Gemini credentials)
   const [isGeminiActive, setIsGeminiActive] = useState<boolean>(true);
 
@@ -640,18 +652,135 @@ export default function ActiveRecallHubView({ addToast, subjects = [], onRecallS
   // Handle Quiz Option Select
   const handleSelectQuizOption = (quizId: string, qIndex: number, optionIndex: number) => {
     const qScores = quizScores[quizId] || { selectedAnswers: {}, submitted: false };
-    if (qScores.submitted) return; // Locked once submitted
+    const mode = quizModeState[quizId] || 'learning';
+    
+    // If quiz is completely submitted, options are locked
+    if (qScores.submitted) return;
+    
+    // In learning mode, each question is locked once answered
+    if (mode === 'learning' && qScores.selectedAnswers[qIndex] !== undefined) return;
+
+    const updatedAnswers = {
+      ...qScores.selectedAnswers,
+      [qIndex]: optionIndex
+    };
 
     setQuizScores(prev => ({
       ...prev,
       [quizId]: {
         ...qScores,
-        selectedAnswers: {
-          ...qScores.selectedAnswers,
-          [qIndex]: optionIndex
-        }
+        selectedAnswers: updatedAnswers
       }
     }));
+
+    // In Learning Mode, trigger the explanation generation immediately!
+    if (mode === 'learning') {
+      const activeQuiz = quizzes.find(q => q.id === quizId);
+      if (activeQuiz) {
+        const q = activeQuiz.questions[qIndex];
+        fetchExplanation(quizId, qIndex, q.question, q.options, q.correctAnswerIndex);
+      }
+    }
+  };
+
+  // On-demand/Lazy explanation fetcher
+  const fetchExplanation = async (quizId: string, qidx: number, question: string, options: string[], correctAnswerIndex: number) => {
+    const cacheKey = `${quizId}_${qidx}`;
+    if (explanationsCache[cacheKey]) return; // already loaded or loading
+
+    setExplanationsCache(prev => ({
+      ...prev,
+      [cacheKey]: {
+        correctAnswerExplanation: '',
+        incorrectOptionsExplanations: [],
+        memoryTip: '',
+        realWorldExample: '',
+        loading: true
+      }
+    }));
+
+    try {
+      const response = await fetch(getApiUrl('/api/recall/explain-question'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question, options, correctAnswerIndex })
+      });
+
+      if (!response.ok) throw new Error('API explanation failure');
+      const data = await response.json();
+
+      setExplanationsCache(prev => ({
+        ...prev,
+        [cacheKey]: {
+          correctAnswerExplanation: data.correctAnswerExplanation || 'Correct!',
+          incorrectOptionsExplanations: data.incorrectOptionsExplanations || [],
+          memoryTip: data.memoryTip || '',
+          realWorldExample: data.realWorldExample || '',
+          loading: false
+        }
+      }));
+    } catch (err: any) {
+      console.error('Explanation load error:', err);
+      setExplanationsCache(prev => ({
+        ...prev,
+        [cacheKey]: {
+          correctAnswerExplanation: 'Could not load explanation. Please verify your internet connection and Gemini credentials.',
+          incorrectOptionsExplanations: [],
+          memoryTip: '',
+          realWorldExample: '',
+          loading: false,
+          error: err.message
+        }
+      }));
+    }
+  };
+
+  // Generate a targeted conceptual flashcard from a missed question
+  const handleGenerateFlashcardFromIncorrect = async (
+    quizId: string,
+    qidx: number,
+    question: string,
+    correctAnswer: string,
+    selectedAnswer: string
+  ) => {
+    const key = `${quizId}_${qidx}`;
+    setGeneratingFlashcardForQ(prev => ({ ...prev, [key]: true }));
+
+    try {
+      const response = await fetch(getApiUrl('/api/recall/generate-single-flashcard'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question, correctAnswer, selectedAnswer })
+      });
+
+      if (!response.ok) throw new Error('Flashcard generation failed');
+      const data = await response.json();
+
+      const newCard: RecallFlashcard = {
+        id: `f_gen_${Date.now()}_missed_${qidx}`,
+        front: data.front || `Concept check: ${question.substring(0, 50)}...`,
+        back: data.back || `Correct answer check: ${correctAnswer}`,
+        createdAt: new Date().toISOString()
+      };
+
+      // Update generated material
+      const currentGen = { ...generatedMaterial };
+      const noteMat = currentGen[activeNoteId] || { questions: [], flashcards: [], quizzes: [] };
+      noteMat.flashcards = [newCard, ...(noteMat.flashcards || [])];
+      currentGen[activeNoteId] = noteMat;
+
+      setGeneratedMaterial(currentGen);
+      localStorage.setItem('recall_generated_material', JSON.stringify(currentGen));
+
+      // Synchronize state
+      setFlashcards(noteMat.flashcards);
+      addToast('Added targeted conceptual flashcard to your study deck! 🗂️', 'success');
+    } catch (err: any) {
+      console.error('Flashcard synthesis error:', err);
+      addToast(`Could not generate flashcard: ${err.message}`, 'error');
+    } finally {
+      setGeneratingFlashcardForQ(prev => ({ ...prev, [key]: false }));
+    }
   };
 
   // Submit Quiz Answers
@@ -686,10 +815,38 @@ export default function ActiveRecallHubView({ addToast, subjects = [], onRecallS
     });
 
     const percent = Math.round((correctCount / totalQs) * 100);
+
+    // Save quiz attempt for Weak Topic Detection Analytics
+    try {
+      const attemptData = {
+        id: `att_${Date.now()}`,
+        quizId,
+        quizTitle: activeQuiz.title,
+        noteId: activeNoteId,
+        score: percent,
+        correctCount,
+        totalCount: totalQs,
+        timestamp: new Date().toISOString()
+      };
+      const savedAttempts = JSON.parse(localStorage.getItem('quiz_attempts') || '[]');
+      savedAttempts.push(attemptData);
+      localStorage.setItem('quiz_attempts', JSON.stringify(savedAttempts));
+    } catch (e) {
+      console.error('Failed to log quiz attempt:', e);
+    }
+
     if (percent >= 80) {
       addToast(`Spectacular work! Score: ${percent}% (${correctCount}/${totalQs}) 🏆`, 'success');
     } else {
       addToast(`Quiz submitted. Score: ${percent}% (${correctCount}/${totalQs}). Try reviewing the topics again! ✍️`, 'info');
+    }
+
+    // In Exam Mode, submission unlocks viewing all explanations, so we load them all on review!
+    const mode = quizModeState[quizId] || 'learning';
+    if (mode === 'exam') {
+      activeQuiz.questions.forEach((q, idx) => {
+        fetchExplanation(quizId, idx, q.question, q.options, q.correctAnswerIndex);
+      });
     }
   };
 
@@ -1338,6 +1495,7 @@ export default function ActiveRecallHubView({ addToast, subjects = [], onRecallS
                       {quizzes.map((quiz) => {
                         const scoreData = quizScores[quiz.id] || { selectedAnswers: {}, submitted: false };
                         const isSubmitted = scoreData.submitted;
+                        const mode = quizModeState[quiz.id] || 'learning';
 
                         // Calculate results if submitted
                         let correctAnswersCount = 0;
@@ -1354,24 +1512,51 @@ export default function ActiveRecallHubView({ addToast, subjects = [], onRecallS
 
                         return (
                           <div key={quiz.id} className="space-y-5">
-                            <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-2 border-b border-white/5 pb-2">
-                              <h4 className="text-xs uppercase font-mono tracking-wider font-semibold text-slate-300">
-                                {quiz.title}
-                              </h4>
-                              {isSubmitted && (
-                                <span className={`text-xs ml-auto font-bold px-2.5 py-0.5 rounded-lg border ${
-                                  correctAnswersCount === quiz.questions.length 
-                                    ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-400'
-                                    : 'bg-indigo-500/10 border-indigo-500/30 text-indigo-300'
-                                }`}>
-                                  Score: {correctAnswersCount}/{quiz.questions.length} ({Math.round((correctAnswersCount / quiz.questions.length) * 100)}%)
-                                </span>
-                              )}
+                            {/* Quiz Header & Mode Selector */}
+                            <div className="flex flex-col sm:flex-row justify-between sm:items-center gap-3 border-b border-white/5 pb-3">
+                              <div className="space-y-0.5">
+                                <h4 className="text-xs uppercase font-mono tracking-wider font-semibold text-slate-300">
+                                  {quiz.title}
+                                </h4>
+                                <p className="text-[10px] text-slate-400">
+                                  {mode === 'learning' 
+                                    ? '🎓 Learning Mode: Instant answer grading & explanation highlights.' 
+                                    : '📝 Exam Mode: Instant grading of all answers after quiz submission.'}
+                                </p>
+                              </div>
+                              
+                              <div className="flex items-center gap-1 bg-slate-950 p-1 rounded-xl border border-white/5 text-[10px] font-mono shrink-0">
+                                <button
+                                  type="button"
+                                  onClick={() => setQuizModeState(prev => ({ ...prev, [quiz.id]: 'learning' }))}
+                                  disabled={isSubmitted}
+                                  className={`px-2.5 py-1 rounded-lg font-bold cursor-pointer transition ${
+                                    mode === 'learning' ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-white'
+                                  } disabled:opacity-50`}
+                                >
+                                  Learning
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setQuizModeState(prev => ({ ...prev, [quiz.id]: 'exam' }))}
+                                  disabled={isSubmitted}
+                                  className={`px-2.5 py-1 rounded-lg font-bold cursor-pointer transition ${
+                                    mode === 'exam' ? 'bg-indigo-600 text-white shadow' : 'text-slate-400 hover:text-white'
+                                  } disabled:opacity-50`}
+                                >
+                                  Exam
+                                </button>
+                              </div>
                             </div>
 
-                            <div className="space-y-4 max-h-[300px] overflow-y-auto pr-1">
+                            <div className="space-y-4 max-h-[350px] overflow-y-auto pr-1">
                               {shownQuestions.map((q, rawIdx) => {
                                 const qidx = quizLayoutMode === 'all' ? rawIdx : currentQIdx;
+                                const selectedIdx = scoreData.selectedAnswers[qidx];
+                                const isQuestionAnswered = isSubmitted || (mode === 'learning' && selectedIdx !== undefined);
+                                const cacheKey = `${quiz.id}_${qidx}`;
+                                const explanation = explanationsCache[cacheKey];
+
                                 return (
                                   <div key={q.id} className="space-y-2.5 bg-slate-900/40 border border-white/5 p-4 rounded-xl">
                                     <p className="text-xs font-semibold text-slate-200 leading-relaxed font-sans flex gap-2">
@@ -1381,26 +1566,26 @@ export default function ActiveRecallHubView({ addToast, subjects = [], onRecallS
 
                                     <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                                       {q.options.map((opt, optidx) => {
-                                        const isSelected = scoreData.selectedAnswers[qidx] === optidx;
-                                        const isCorrect = q.correctAnswerIndex === optidx;
+                                        const isCurrentSelected = selectedIdx === optidx;
+                                        const isCorrectOption = q.correctAnswerIndex === optidx;
                                         
                                         // Border colors based on state
                                         let optionStyle = 'bg-slate-900/60 border-white/5 text-slate-350 hover:bg-white/5';
                                         let statusSign = null;
 
-                                        if (isSelected && !isSubmitted) {
+                                        if (isCurrentSelected && !isQuestionAnswered) {
                                           optionStyle = 'bg-indigo-500/10 border-indigo-500 text-indigo-200';
                                         } 
-                                        else if (isSubmitted) {
-                                          if (isCorrect) {
+                                        else if (isQuestionAnswered) {
+                                          if (isCorrectOption) {
                                             optionStyle = 'bg-emerald-500/10 border-emerald-500 text-emerald-400 font-medium';
                                             statusSign = <Check size={11} className="text-emerald-400" />;
                                           } 
-                                          else if (isSelected && !isCorrect) {
+                                          else if (isCurrentSelected && !isCorrectOption) {
                                             optionStyle = 'bg-rose-500/10 border-rose-500 text-rose-400 line-through';
                                           } 
                                           else {
-                                            optionStyle = 'bg-slate-900/40 border-white/5 text-slate-550 opacity-60';
+                                            optionStyle = 'bg-slate-900/40 border-white/5 text-slate-550 opacity-40';
                                           }
                                         }
 
@@ -1409,9 +1594,9 @@ export default function ActiveRecallHubView({ addToast, subjects = [], onRecallS
                                             key={optidx}
                                             type="button"
                                             onClick={() => handleSelectQuizOption(quiz.id, qidx, optidx)}
-                                            disabled={isSubmitted}
+                                            disabled={isQuestionAnswered}
                                             className={`w-full text-left p-3 rounded-xl border text-xs transition flex items-center justify-between gap-2 ${
-                                              isSubmitted ? 'cursor-default' : 'cursor-pointer'
+                                              isQuestionAnswered ? 'cursor-default' : 'cursor-pointer'
                                             } ${optionStyle}`}
                                           >
                                             <span>{opt}</span>
@@ -1420,6 +1605,85 @@ export default function ActiveRecallHubView({ addToast, subjects = [], onRecallS
                                         );
                                       })}
                                     </div>
+
+                                    {/* Learning Mode Immediate AI Explanation Feedback */}
+                                    {mode === 'learning' && isQuestionAnswered && (
+                                      <div className="mt-3 pt-2.5 border-t border-white/5 space-y-2">
+                                        <div className="flex items-center gap-1 text-[10px] text-indigo-400 font-bold uppercase tracking-wide">
+                                          <Sparkles size={11} />
+                                          <span>AI Explanation Analysis</span>
+                                        </div>
+                                        
+                                        {!explanation ? (
+                                          <button
+                                            type="button"
+                                            onClick={() => fetchExplanation(quiz.id, qidx, q.question, q.options, q.correctAnswerIndex)}
+                                            className="px-2 py-1 bg-indigo-600/20 hover:bg-indigo-600/30 text-indigo-300 rounded text-[9px] font-semibold border border-indigo-500/20 cursor-pointer transition"
+                                          >
+                                            Load Explanation
+                                          </button>
+                                        ) : explanation.loading ? (
+                                          <div className="p-3 bg-slate-950/40 border border-white/5 rounded-xl space-y-2 animate-pulse">
+                                            <div className="h-3 bg-white/10 rounded w-1/4"></div>
+                                            <div className="h-2 bg-white/5 rounded w-3/4"></div>
+                                          </div>
+                                        ) : (
+                                          <div className="p-3 bg-slate-950/40 border border-white/5 rounded-xl space-y-2.5 text-[11px] text-slate-300 leading-relaxed font-sans">
+                                            <div>
+                                              <span className="font-bold text-emerald-400 text-[9px] uppercase mr-1">Correct Concept:</span>
+                                              <span>{explanation.correctAnswerExplanation}</span>
+                                            </div>
+
+                                            {explanation.incorrectOptionsExplanations && explanation.incorrectOptionsExplanations.length > 0 && (
+                                              <div className="pt-1.5 border-t border-white/5 space-y-1">
+                                                <span className="font-bold text-rose-400 text-[9px] block uppercase mb-1">Option Breakdown:</span>
+                                                {explanation.incorrectOptionsExplanations.map((inc, i) => (
+                                                  <div key={i} className="text-[10px] text-slate-400 pl-2 border-l border-white/10">
+                                                    {inc}
+                                                  </div>
+                                                ))}
+                                              </div>
+                                            )}
+
+                                            {explanation.memoryTip && (
+                                              <div className="pt-2 border-t border-white/5 bg-violet-950/10 p-2 rounded-lg border border-violet-500/10">
+                                                <span className="font-bold text-violet-400 text-[9px] block uppercase mb-0.5">💡 Memory Tip:</span>
+                                                <p className="text-[10px] text-violet-200">{explanation.memoryTip}</p>
+                                              </div>
+                                            )}
+
+                                            {explanation.realWorldExample && (
+                                              <div className="pt-2 border-t border-white/5 bg-amber-950/10 p-2 rounded-lg border border-amber-500/10">
+                                                <span className="font-bold text-amber-400 text-[9px] block uppercase mb-0.5">🌐 Real World Example:</span>
+                                                <p className="text-[10px] text-amber-200">{explanation.realWorldExample}</p>
+                                              </div>
+                                            )}
+
+                                            {selectedIdx !== q.correctAnswerIndex && (
+                                              <button
+                                                type="button"
+                                                disabled={generatingFlashcardForQ[cacheKey]}
+                                                onClick={() => handleGenerateFlashcardFromIncorrect(
+                                                  quiz.id,
+                                                  qidx,
+                                                  q.question,
+                                                  q.options[q.correctAnswerIndex],
+                                                  selectedIdx !== undefined ? q.options[selectedIdx] : ''
+                                                )}
+                                                className="mt-2 py-1 px-2.5 bg-violet-600/20 hover:bg-violet-600/35 text-violet-300 rounded border border-violet-500/25 text-[9px] font-bold cursor-pointer transition flex items-center justify-center gap-1.5 w-full sm:w-auto"
+                                              >
+                                                {generatingFlashcardForQ[cacheKey] ? (
+                                                  <span className="animate-spin">⌛</span>
+                                                ) : (
+                                                  <Sparkles size={10} />
+                                                )}
+                                                <span>{generatingFlashcardForQ[cacheKey] ? 'Synthesizing card...' : 'Generate Flashcard for incorrect answer'}</span>
+                                              </button>
+                                            )}
+                                          </div>
+                                        )}
+                                      </div>
+                                    )}
                                   </div>
                                 );
                               })}
@@ -1496,6 +1760,145 @@ export default function ActiveRecallHubView({ addToast, subjects = [], onRecallS
                                 📅 Schedule Revision
                               </button>
                             </div>
+
+                            {/* Quiz Completed Comprehensive Review Board */}
+                            {isSubmitted && (
+                              <div className="mt-6 p-4 bg-slate-950/60 rounded-2xl border border-white/10 space-y-5 animate-fade-in text-left">
+                                <div className="flex items-center gap-2 border-b border-white/5 pb-2">
+                                  <CheckCircle2 size={16} className="text-emerald-400" />
+                                  <h4 className="text-xs font-bold uppercase tracking-wider text-slate-200">
+                                    Comprehensive Performance Review Screen
+                                  </h4>
+                                </div>
+                                
+                                <div className="space-y-4">
+                                  {quiz.questions.map((q, qidx) => {
+                                    const selectedIdx = scoreData.selectedAnswers[qidx];
+                                    const isCorrect = selectedIdx === q.correctAnswerIndex;
+                                    const cacheKey = `${quiz.id}_${qidx}`;
+                                    const explanation = explanationsCache[cacheKey];
+                                    
+                                    return (
+                                      <div key={q.id} className="p-4 bg-slate-900/40 border border-white/5 rounded-xl space-y-3">
+                                        <div className="flex items-start justify-between gap-3">
+                                          <p className="text-xs font-semibold text-slate-200 leading-relaxed font-sans">
+                                            <span className="text-indigo-400 font-mono mr-1.5">{qidx + 1}.</span>
+                                            {q.question}
+                                          </p>
+                                          <span className={`text-[10px] uppercase font-mono font-bold px-2 py-0.5 rounded border shrink-0 ${
+                                            isCorrect 
+                                              ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-400' 
+                                              : 'bg-rose-500/10 border-rose-500/20 text-rose-400'
+                                          }`}>
+                                            {isCorrect ? 'Correct' : 'Incorrect'}
+                                          </span>
+                                        </div>
+                                        
+                                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-[11px] font-sans">
+                                          <div className="p-2 rounded bg-slate-950/40 border border-white/5 text-slate-350">
+                                            <span className="font-semibold text-slate-400 text-[10px] block mb-0.5 uppercase tracking-wide">Your Answer</span>
+                                            <span className={isCorrect ? 'text-emerald-400 font-medium' : 'text-rose-400 line-through'}>
+                                              {selectedIdx !== undefined ? q.options[selectedIdx] : 'No answer'}
+                                            </span>
+                                          </div>
+                                          
+                                          {!isCorrect && (
+                                            <div className="p-2 rounded bg-slate-950/40 border border-white/5 text-emerald-400">
+                                              <span className="font-semibold text-slate-400 text-[10px] block mb-0.5 uppercase tracking-wide">Correct Answer</span>
+                                              <span className="font-medium">
+                                                {q.options[q.correctAnswerIndex]}
+                                              </span>
+                                            </div>
+                                          )}
+                                        </div>
+
+                                        {/* AI Explanation Block */}
+                                        <div className="mt-2.5">
+                                          <span className="font-semibold text-slate-400 text-[10px] block mb-1.5 uppercase tracking-wide flex items-center gap-1">
+                                            <Sparkles size={11} className="text-violet-400" />
+                                            <span>AI Answer Explanation & Mnemonic Analysis</span>
+                                          </span>
+                                          
+                                          {!explanation ? (
+                                            <button
+                                              type="button"
+                                              onClick={() => fetchExplanation(quiz.id, qidx, q.question, q.options, q.correctAnswerIndex)}
+                                              className="px-2.5 py-1 text-[10px] bg-white/5 border border-white/10 hover:bg-white/10 text-slate-300 rounded font-semibold cursor-pointer transition"
+                                            >
+                                              Fetch AI Explanation
+                                            </button>
+                                          ) : explanation.loading ? (
+                                            <div className="p-3 bg-slate-950/40 border border-white/5 rounded-xl space-y-2 animate-pulse">
+                                              <div className="h-3 bg-white/10 rounded w-1/4"></div>
+                                              <div className="h-2 bg-white/5 rounded w-3/4"></div>
+                                            </div>
+                                          ) : (
+                                            <div className="p-3 bg-slate-950/40 border border-white/5 rounded-xl space-y-2.5 text-xs text-slate-300 leading-relaxed font-sans text-left">
+                                              {/* Correct explanation */}
+                                              <div>
+                                                <span className="font-bold text-emerald-400 text-[10px] mr-1 uppercase">Correct Concept:</span>
+                                                <span>{explanation.correctAnswerExplanation}</span>
+                                              </div>
+
+                                              {/* Incorrect explanations */}
+                                              {explanation.incorrectOptionsExplanations && explanation.incorrectOptionsExplanations.length > 0 && (
+                                                <div className="pt-1.5 border-t border-white/5 space-y-1">
+                                                  <span className="font-bold text-rose-400 text-[10px] block uppercase mb-1">Option Breakdown:</span>
+                                                  {explanation.incorrectOptionsExplanations.map((inc, i) => (
+                                                    <div key={i} className="text-[11px] text-slate-400 pl-2 border-l border-white/10 text-left">
+                                                      {inc}
+                                                    </div>
+                                                  ))}
+                                                </div>
+                                              )}
+
+                                              {/* Memory tip */}
+                                              {explanation.memoryTip && (
+                                                <div className="pt-2 border-t border-white/5 bg-violet-950/10 p-2 rounded-lg border border-violet-500/10 text-left">
+                                                  <span className="font-bold text-violet-400 text-[10px] block uppercase mb-0.5">💡 Memory Tip & Mnemonic:</span>
+                                                  <p className="text-[11px] text-violet-200">{explanation.memoryTip}</p>
+                                                </div>
+                                              )}
+
+                                              {/* Real world example */}
+                                              {explanation.realWorldExample && (
+                                                <div className="pt-2 border-t border-white/5 bg-amber-950/10 p-2 rounded-lg border border-amber-500/10 text-left">
+                                                  <span className="font-bold text-amber-400 text-[10px] block uppercase mb-0.5">🌐 Real-World Analogy:</span>
+                                                  <p className="text-[11px] text-amber-200">{explanation.realWorldExample}</p>
+                                                </div>
+                                              )}
+
+                                              {/* Synthesize flashcard button */}
+                                              {!isCorrect && (
+                                                <button
+                                                  type="button"
+                                                  disabled={generatingFlashcardForQ[cacheKey]}
+                                                  onClick={() => handleGenerateFlashcardFromIncorrect(
+                                                    quiz.id,
+                                                    qidx,
+                                                    q.question,
+                                                    q.options[q.correctAnswerIndex],
+                                                    selectedIdx !== undefined ? q.options[selectedIdx] : ''
+                                                  )}
+                                                  className="mt-2 py-1 px-2.5 bg-violet-600/20 hover:bg-violet-600/35 text-violet-300 rounded border border-violet-500/25 text-[10px] font-bold cursor-pointer transition flex items-center gap-1.5"
+                                                >
+                                                  {generatingFlashcardForQ[cacheKey] ? (
+                                                    <span className="animate-spin">⌛</span>
+                                                  ) : (
+                                                    <Sparkles size={11} />
+                                                  )}
+                                                  <span>{generatingFlashcardForQ[cacheKey] ? 'Creating Card...' : 'Synthesize Flashcard for this concept'}</span>
+                                                </button>
+                                              )}
+                                            </div>
+                                          )}
+                                        </div>
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                            )}
                           </div>
                         );
                       })}

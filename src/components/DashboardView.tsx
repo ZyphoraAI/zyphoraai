@@ -7,6 +7,8 @@ import {
   Brain, Star, CalendarClock, Award
 } from 'lucide-react';
 import { Task, StudyLog, QuickLink, ExamCountdown, StudySession, Subject } from '../types';
+import { runPerformanceAnalysis, PerformanceAnalysis } from '../utils/performanceAnalysis';
+import { getApiUrl } from './AITutorView';
 
 interface DashboardViewProps {
   tasks: Task[];
@@ -70,6 +72,8 @@ export default function DashboardView({
   // AI Tutor metrics states
   const [recentTutorSessions, setRecentTutorSessions] = useState<any[]>([]);
   const [frequentTopics, setFrequentTopics] = useState<string[]>([]);
+  const [aiReportLoading, setAiReportLoading] = useState(false);
+  const [aiCoachingReport, setAiCoachingReport] = useState<string | null>(null);
 
   useEffect(() => {
     const local = localStorage.getItem('revision_items');
@@ -413,6 +417,51 @@ export default function DashboardView({
     .filter(t => t.status !== 'Completed')
     .slice(0, 3);
 
+  // Load dynamic weak topic detection performance data
+  const performanceData = runPerformanceAnalysis();
+
+  const handleRecommendationAction = (rec: any) => {
+    if (rec.type === 'generate_flashcards') {
+      onNavigate('recall', 'flashcards');
+    } else if (rec.type === 'generate_quizzes') {
+      onNavigate('recall', 'quiz');
+    } else if (rec.type === 'review_notes') {
+      onNavigate('recall', 'notes');
+    } else if (rec.type === 'ask_ai_tutor') {
+      onNavigate('tutor');
+    } else if (rec.type === 'schedule_review') {
+      onNavigate('planner');
+    }
+  };
+
+  const handleRequestCoachingReport = async () => {
+    try {
+      setAiReportLoading(true);
+      setAiCoachingReport(null);
+      const res = await fetch(getApiUrl('/api/recall/ai-insights'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          strengths: performanceData.strengths, 
+          weakAreas: performanceData.weakAreas 
+        })
+      });
+      if (!res.ok) throw new Error('Failed to generate coaching insights');
+      const data = await res.json();
+      setAiCoachingReport(data.coachingReport);
+      if (addToast) {
+        addToast('🎯 Strategic report compiled successfully!', 'success');
+      }
+    } catch (err: any) {
+      console.error(err);
+      if (addToast) {
+        addToast('⚠️ Could not generate strategic report. Please try again.', 'error');
+      }
+    } finally {
+      setAiReportLoading(false);
+    }
+  };
+
   return (
     <div id="dashboard-view-container" className="space-y-8 animate-fade-in">
       
@@ -658,6 +707,258 @@ export default function DashboardView({
           </div>
           <div className="p-3.5 bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 rounded-xl">
             <Award className="w-6 h-6 text-emerald-400" />
+          </div>
+        </div>
+      </div>
+
+      {/* AI Weak Topic Detection & Diagnostic Hub */}
+      <div id="ai-weak-topic-detection-dashboard" className="bg-white/5 backdrop-blur-md border border-white/10 rounded-2xl p-6 shadow-xl space-y-6">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between border-b border-white/10 pb-4 gap-3">
+          <div className="flex items-center gap-3">
+            <div className="p-2.5 bg-violet-500/10 border border-violet-500/20 text-violet-400 rounded-xl">
+              <Brain className="w-5 h-5 text-violet-400 animate-pulse" />
+            </div>
+            <div className="text-left">
+              <h2 className="text-lg font-display font-medium text-white tracking-wide">AI Weak Topic Detection & Diagnostic Hub</h2>
+              <p className="text-xs text-slate-400 font-sans">Dynamic diagnostic analysis of your quiz attempts, flashcard performance, and active study retention schedules</p>
+            </div>
+          </div>
+          <button
+            type="button"
+            disabled={aiReportLoading}
+            onClick={handleRequestCoachingReport}
+            className="text-xs font-semibold py-2 px-4 rounded-xl bg-violet-600/20 hover:bg-violet-600/35 text-violet-300 border border-violet-500/30 transition flex items-center gap-1.5 cursor-pointer disabled:opacity-50 shrink-0 self-start sm:self-center"
+          >
+            {aiReportLoading ? (
+              <>
+                <span className="animate-spin text-[10px]">⌛</span>
+                <span>Compiling Strategy...</span>
+              </>
+            ) : (
+              <>
+                <Sparkles size={13} className="text-violet-400" />
+                <span>Request Strategic Coach Report</span>
+              </>
+            )}
+          </button>
+        </div>
+
+        {/* Live AI Strategic Coaching Report Display Panel */}
+        {aiCoachingReport && (
+          <div className="p-4 bg-slate-950/70 border border-violet-500/25 rounded-2xl space-y-3 text-left animate-fade-in max-h-[300px] overflow-y-auto">
+            <div className="flex items-center justify-between border-b border-white/5 pb-2">
+              <span className="text-xs font-bold uppercase tracking-wider text-violet-400 flex items-center gap-1.5">
+                <Brain size={12} />
+                <span>AI Senior Academic Coach Report</span>
+              </span>
+              <button 
+                onClick={() => setAiCoachingReport(null)}
+                className="text-[10px] font-mono text-slate-505 hover:text-slate-300 uppercase cursor-pointer"
+              >
+                Clear
+              </button>
+            </div>
+            <div className="text-xs text-slate-300 leading-relaxed space-y-2 font-sans whitespace-pre-wrap">
+              {aiCoachingReport}
+            </div>
+          </div>
+        )}
+
+        {/* Smart Insights Block */}
+        <div className="space-y-2 text-left">
+          <span className="text-[10px] font-mono uppercase text-slate-400 tracking-wider font-bold">Smart Insights</span>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3.5">
+            {performanceData.smartInsights.map((insight, idx) => (
+              <div key={idx} className="flex items-center gap-2.5 p-3 bg-indigo-950/20 border border-indigo-500/15 rounded-xl">
+                <Sparkles size={14} className="text-indigo-455 text-indigo-400 shrink-0" />
+                <p className="text-xs font-sans text-slate-300">{insight}</p>
+              </div>
+            ))}
+            {performanceData.smartInsights.length === 0 && (
+              <p className="text-xs text-slate-500 font-sans italic">No study logs or recall items recorded yet. Study some notes or take a quiz to initialize smart insights!</p>
+            )}
+          </div>
+        </div>
+
+        {/* Core 4-Column Performance Matrix */}
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+          
+          {/* Column 1: Strengths & Masteries */}
+          <div className="p-4 bg-slate-950/30 border border-white/5 rounded-2xl space-y-3.5 text-left flex flex-col justify-between">
+            <div className="space-y-1">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold uppercase text-emerald-400 tracking-wider font-mono">Strengths</span>
+                <span className="text-[9px] px-1.5 py-0.5 rounded bg-emerald-500/10 border border-emerald-500/20 text-emerald-400 font-mono font-bold">MASTERED</span>
+              </div>
+              <p className="text-[10px] text-slate-500">Highest scores and solid retrieval retention rates</p>
+            </div>
+            
+            <div className="space-y-2.5 flex-1 mt-2">
+              {performanceData.strengths.map((item, idx) => (
+                <div key={idx} className="p-2.5 bg-emerald-500/5 border border-emerald-500/10 rounded-xl space-y-1">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-white truncate max-w-[120px]" title={item.name}>{item.name}</span>
+                    <span className="text-[11px] font-bold font-mono text-emerald-400">{item.score}%</span>
+                  </div>
+                  <div className="w-full bg-slate-900 rounded-full h-1">
+                    <div className="bg-emerald-400 h-1 rounded-full" style={{ width: `${item.score}%` }}></div>
+                  </div>
+                  <span className="text-[8px] uppercase tracking-wide text-slate-500 font-mono">{item.type}</span>
+                </div>
+              ))}
+              {performanceData.strengths.length === 0 && (
+                <div className="py-8 text-center text-[11px] text-slate-500 italic">No masteries (over 85%) recorded yet. Keep studying!</div>
+              )}
+            </div>
+          </div>
+
+          {/* Column 2: Weak Areas */}
+          <div className="p-4 bg-slate-950/30 border border-white/5 rounded-2xl space-y-3.5 text-left flex flex-col justify-between">
+            <div className="space-y-1">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold uppercase text-rose-400 tracking-wider font-mono">Weak Areas</span>
+                <span className="text-[9px] px-1.5 py-0.5 rounded bg-rose-500/10 border border-rose-500/20 text-rose-400 font-mono font-bold">DIAGNOSED</span>
+              </div>
+              <p className="text-[10px] text-slate-500">Lower quiz scores or forgotten recall items</p>
+            </div>
+            
+            <div className="space-y-2.5 flex-1 mt-2">
+              {performanceData.weakAreas.map((item, idx) => (
+                <div key={idx} className="p-2.5 bg-rose-500/5 border border-rose-500/10 rounded-xl space-y-1">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-white truncate max-w-[120px]" title={item.name}>{item.name}</span>
+                    <span className="text-[11px] font-bold font-mono text-rose-400">{item.score}%</span>
+                  </div>
+                  <div className="w-full bg-slate-900 rounded-full h-1">
+                    <div className="bg-rose-400 h-1 rounded-full" style={{ width: `${item.score}%` }}></div>
+                  </div>
+                  <p className="text-[9px] text-slate-400 leading-none">{item.reason}</p>
+                </div>
+              ))}
+              {performanceData.weakAreas.length === 0 && (
+                <div className="py-8 text-center text-[11px] text-slate-500 italic">Perfect run! No weak areas (under 75%) currently diagnosed.</div>
+              )}
+            </div>
+          </div>
+
+          {/* Column 3: Most Improved */}
+          <div className="p-4 bg-slate-950/30 border border-white/5 rounded-2xl space-y-3.5 text-left flex flex-col justify-between">
+            <div className="space-y-1">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold uppercase text-sky-400 tracking-wider font-mono">Most Improved</span>
+                <span className="text-[9px] px-1.5 py-0.5 rounded bg-sky-500/10 border border-sky-500/20 text-sky-400 font-mono font-bold">TRENDING</span>
+              </div>
+              <p className="text-[10px] text-slate-500">Rising scores and consistent consecutive correct recalls</p>
+            </div>
+            
+            <div className="space-y-2.5 flex-1 mt-2">
+              {performanceData.mostImproved.map((item, idx) => (
+                <div key={idx} className="p-2.5 bg-sky-500/5 border border-sky-500/10 rounded-xl space-y-1.5">
+                  <span className="text-xs font-bold text-white block truncate" title={item.name}>{item.name}</span>
+                  <p className="text-[10px] text-slate-350 leading-relaxed">{item.description}</p>
+                  <span className="text-[8px] uppercase tracking-wide text-slate-500 font-mono block">{item.type}</span>
+                </div>
+              ))}
+              {performanceData.mostImproved.length === 0 && (
+                <div className="py-8 text-center text-[11px] text-slate-500 italic">Practice recall prompts multiple times to unlock trending.</div>
+              )}
+            </div>
+          </div>
+
+          {/* Column 4: Needs Immediate Review */}
+          <div className="p-4 bg-slate-950/30 border border-white/5 rounded-2xl space-y-3.5 text-left flex flex-col justify-between">
+            <div className="space-y-1">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold uppercase text-amber-400 tracking-wider font-mono">Needs Review</span>
+                <span className="text-[9px] px-1.5 py-0.5 rounded bg-amber-500/10 border border-amber-500/20 text-amber-400 font-mono font-bold">CRITICAL</span>
+              </div>
+              <p className="text-[10px] text-slate-500">Spaced repetition reviews past due or expiring today</p>
+            </div>
+            
+            <div className="space-y-2.5 flex-1 mt-2">
+              {performanceData.needsImmediateReview.map((item, idx) => (
+                <div key={idx} className="p-2.5 bg-amber-500/5 border border-amber-500/10 rounded-xl space-y-1 transition hover:bg-amber-500/10 cursor-pointer" onClick={() => onNavigate('revision')}>
+                  <div className="flex items-start justify-between gap-1.5">
+                    <span className="text-xs font-bold text-white truncate max-w-[120px]" title={item.title}>{item.title}</span>
+                    <span className="text-[8px] uppercase px-1 rounded bg-slate-900 text-slate-400 font-mono shrink-0">{item.itemType}</span>
+                  </div>
+                  <p className="text-[9px] text-amber-350 leading-none">{item.reason}</p>
+                </div>
+              ))}
+              {performanceData.needsImmediateReview.length === 0 && (
+                <div className="py-8 text-center text-[11px] text-emerald-400 italic">Fantastic! Your active review queue is completely empty.</div>
+              )}
+            </div>
+          </div>
+
+        </div>
+
+        {/* AI Recommendations & Smart Remediation Action Cards */}
+        <div className="space-y-3 text-left border-t border-white/5 pt-5">
+          <div className="flex items-center gap-2">
+            <Sparkles size={14} className="text-violet-400" />
+            <span className="text-xs font-bold uppercase text-slate-200 tracking-wider">AI Coach Remediation Recommendations</span>
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5">
+            {performanceData.aiRecommendations.map((rec, idx) => (
+              <div key={idx} className="p-4 bg-slate-900/35 border border-white/10 rounded-2xl flex flex-col justify-between gap-3 h-full">
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2">
+                    <span className="text-lg">
+                      {rec.type === 'generate_flashcards' ? '🎴' :
+                       rec.type === 'generate_quizzes' ? '📝' :
+                       rec.type === 'review_notes' ? '📚' :
+                       rec.type === 'ask_ai_tutor' ? '🤖' : '📅'}
+                    </span>
+                    <h4 className="text-xs font-bold text-slate-200 leading-snug">{rec.title}</h4>
+                  </div>
+                  <p className="text-[11px] text-slate-400 leading-relaxed font-sans">{rec.description}</p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => handleRecommendationAction(rec)}
+                  className="w-full py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-[11px] font-bold cursor-pointer transition text-center"
+                >
+                  {rec.actionLabel} &rarr;
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Improvement Track Over Time Progress Chart */}
+        <div className="space-y-3.5 text-left border-t border-white/5 pt-5">
+          <div className="flex items-center justify-between">
+            <span className="text-[10px] font-mono uppercase text-slate-400 tracking-wider">Historical Improvement Track Over Time</span>
+            <span className="text-[9px] font-mono text-indigo-300">Dynamic performance averages</span>
+          </div>
+          
+          <div className="flex items-end justify-between h-28 pt-4 px-2">
+            {performanceData.improvementOverTime.map((pt, index) => {
+              // height percentage from score (0-100)
+              const heightPct = Math.min(100, Math.max(12, pt.avgScore));
+              return (
+                <div key={index} className="flex flex-col items-center flex-1 group relative">
+                  <div className="w-full px-2 flex flex-col justify-end items-center relative">
+                    {/* Tooltip */}
+                    <div className="absolute -top-10 px-2 py-1 bg-slate-950 border border-white/10 text-slate-200 text-[10px] font-mono rounded opacity-0 group-hover:opacity-100 transition duration-150 pointer-events-none whitespace-nowrap z-10 text-center">
+                      <p className="font-bold text-indigo-305 text-indigo-300">{pt.avgScore}% proficiency</p>
+                      <p className="text-[9px] text-slate-400">{pt.count} sessions completed</p>
+                    </div>
+                    
+                    <motion.div
+                      initial={{ height: 0 }}
+                      animate={{ height: `${heightPct}%` }}
+                      transition={{ delay: index * 0.05, duration: 0.5, ease: 'easeOut' }}
+                      className="w-full max-w-[32px] rounded-t bg-gradient-to-t from-violet-600/30 to-violet-400 group-hover:from-violet-500 group-hover:to-violet-300 shadow-[0_0_8px_rgba(139,92,246,0.15)] flex items-center justify-center relative min-h-[16px]"
+                    >
+                      <span className="text-[8px] font-bold font-mono text-slate-300 group-hover:text-white absolute top-1">{pt.avgScore}</span>
+                    </motion.div>
+                  </div>
+                  <span className="text-[9px] font-mono text-slate-400 mt-2">{pt.date}</span>
+                </div>
+              );
+            })}
           </div>
         </div>
       </div>

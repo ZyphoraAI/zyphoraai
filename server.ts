@@ -213,6 +213,149 @@ app.post("/api/recall/quiz", async (req, res) => {
   }
 });
 
+// Endpoint 3.5: Explain specific quiz question (on-demand)
+app.post("/api/recall/explain-question", async (req, res) => {
+  try {
+    const { question, options, correctAnswerIndex } = req.body;
+    if (!question || !options || correctAnswerIndex === undefined) {
+      return res.status(400).json({ error: "Missing question, options, or correctAnswerIndex" });
+    }
+
+    if (!ai) {
+      return res.status(503).json({ error: "Gemini API client not initialized" });
+    }
+
+    const response = await ai.models.generateContent({
+      model: "gemini-3.1-flash-lite",
+      contents: `Provide an in-depth educational explanation for the following multiple choice question:
+Question: ${question}
+Options:
+0: ${options[0] || ""}
+1: ${options[1] || ""}
+2: ${options[2] || ""}
+3: ${options[3] || ""}
+Correct Answer Index: ${correctAnswerIndex}
+
+Follow these instructions strictly:
+1. Provide a detailed explanation for why the correct option is right. Highlight key academic concepts with markdown double-asterisks **bolding**.
+2. Provide a separate, direct explanation for why EACH of the other three options is incorrect in this context.
+3. Include a simple memory tip, analogy, or mnemonic to help the student retain this concept.
+4. Provide a simple, clear, real-world illustrative example of the concept if applicable.`,
+      config: {
+        systemInstruction: "You are an encouraging and brilliant academic tutor. Explain concepts clearly, highlighting key terms and providing structured explanations.",
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            correctAnswerExplanation: {
+              type: Type.STRING,
+              description: "Detailed description of why the correct option is correct. Use **bolding** to highlight key terms/concepts."
+            },
+            incorrectOptionsExplanations: {
+              type: Type.ARRAY,
+              items: { type: Type.STRING },
+              description: "An array of exactly 4 strings. The string corresponding to the correct answer index should be empty or a positive confirmation (e.g., 'Correct!'), and the other 3 strings must explain why those specific options are incorrect."
+            },
+            memoryTip: {
+              type: Type.STRING,
+              description: "A memorable learning tip, analogy, or mnemonic."
+            },
+            realWorldExample: {
+              type: Type.STRING,
+              description: "A vivid real-world example of this concept."
+            }
+          },
+          required: ["correctAnswerExplanation", "incorrectOptionsExplanations", "memoryTip", "realWorldExample"]
+        }
+      }
+    });
+
+    const parsedData = JSON.parse(response.text?.trim() || "{}");
+    res.json(parsedData);
+  } catch (err: any) {
+    console.error("Explain Question API failure:", err);
+    res.status(500).json({ error: "Failed to generate question explanation", details: err?.message });
+  }
+});
+
+// Endpoint 3.6: AI Strategic Insights & Personalized Recommendations for Weak Topics
+app.post("/api/recall/ai-insights", async (req, res) => {
+  try {
+    const { strengths, weakAreas } = req.body;
+
+    if (!ai) {
+      return res.status(503).json({ error: "Gemini API client not initialized" });
+    }
+
+    const strengthsList = (strengths || []).map((s: any) => `${s.name} (${s.type})`).join(", ");
+    const weakAreasList = (weakAreas || []).map((w: any) => `${w.name} (${w.type} - score: ${w.score}%)`).join(", ");
+
+    const response = await ai.models.generateContent({
+      model: "gemini-3.1-flash-lite",
+      contents: `You are Zyphora's Senior Academic AI Coach. Analyze this student's recent diagnostic performance:
+- Strengths (Mastered Topics): ${strengthsList || "None recorded yet. Complete more quizzes and reviews!"}
+- Weak Areas (Struggling Topics): ${weakAreasList || "No specific weak areas detected. You are keeping a solid pace!"}
+
+Provide a comprehensive, highly encouraging, strategic coaching report in markdown. Include:
+1. A brief personal motivating evaluation of their current balance.
+2. 3 concrete, hyper-specific actionable advice points or memory mnemonics for their weak areas.
+3. Recommendations for study modes to activate next (e.g., active recall, targeted quizzes, tutor conversation).`,
+      config: {
+        systemInstruction: "You are a warm, highly expert, professional learning strategist and academic counselor. Focus on actionable cognitive tips, spacing cycles, and active engagement. Keep the tone inspiring and clear.",
+      }
+    });
+
+    res.json({ coachingReport: response.text });
+  } catch (err: any) {
+    console.error("AI Insights API failure:", err);
+    res.status(500).json({ error: "Failed to generate AI strategic insights", details: err?.message });
+  }
+});
+
+// Endpoint 3.7: Generate single targeted flashcard from missed quiz question
+app.post("/api/recall/generate-single-flashcard", async (req, res) => {
+  try {
+    const { question, correctAnswer, selectedAnswer } = req.body;
+    if (!question || !correctAnswer) {
+      return res.status(400).json({ error: "Missing question or correctAnswer" });
+    }
+
+    if (!ai) {
+      return res.status(503).json({ error: "Gemini API client not initialized" });
+    }
+
+    const response = await ai.models.generateContent({
+      model: "gemini-3.1-flash-lite",
+      contents: `Create a highly targeted educational study flashcard to help a student learn the concept they missed in this quiz question:
+Question: ${question}
+The correct answer option was: ${correctAnswer}
+The student incorrectly answered: ${selectedAnswer || "None"}
+
+Design:
+1. Front: A concise, clear conceptual prompt, question, or key keyword.
+2. Back: A clear explanation of the correct concept and a quick mnemonic or memory cue.`,
+      config: {
+        systemInstruction: "You are a professional academic flashcard designer. Generate neat flashcards with a concise, clear front, and a comprehensive explanation on the back.",
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            front: { type: Type.STRING },
+            back: { type: Type.STRING }
+          },
+          required: ["front", "back"]
+        }
+      }
+    });
+
+    const parsedData = JSON.parse(response.text?.trim() || "{}");
+    res.json(parsedData);
+  } catch (err: any) {
+    console.error("Single flashcard generation API failure:", err);
+    res.status(500).json({ error: "Failed to generate single flashcard", details: err?.message });
+  }
+});
+
 // Endpoint 4: Analyze study materials from file import (PDF, DOCX, TXT)
 app.post("/api/import/analyze", async (req, res) => {
   try {
@@ -707,6 +850,9 @@ Behavior, Formatting & Speed Rules:
     res.setHeader("Cache-Control", "no-cache");
     res.setHeader("Connection", "keep-alive");
     res.setHeader("X-Accel-Buffering", "no");
+    if (typeof (res as any).flushHeaders === 'function') {
+      (res as any).flushHeaders();
+    }
 
     let responseStream;
     let isSearchActive = false;

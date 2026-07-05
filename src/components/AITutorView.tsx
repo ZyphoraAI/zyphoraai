@@ -48,28 +48,31 @@ function tokenizeBlocks(text: string): Block[] {
 
   while (currentIndex < length) {
     const codeIndex = text.indexOf('```', currentIndex);
-    const mathIndex = text.indexOf('$$', currentIndex);
+    const mathDollarIndex = text.indexOf('$$', currentIndex);
+    const mathBracketIndex = text.indexOf('\\[', currentIndex);
+    const beginIndex = text.indexOf('\\begin{', currentIndex);
 
-    let nextIndex = -1;
-    let isCode = false;
+    let minIndex = -1;
+    let matchType: 'code' | 'math_dollar' | 'math_bracket' | 'math_begin' = 'code';
 
-    if (codeIndex !== -1 && mathIndex !== -1) {
-      if (codeIndex < mathIndex) {
-        nextIndex = codeIndex;
-        isCode = true;
-      } else {
-        nextIndex = mathIndex;
-        isCode = false;
-      }
-    } else if (codeIndex !== -1) {
-      nextIndex = codeIndex;
-      isCode = true;
-    } else if (mathIndex !== -1) {
-      nextIndex = mathIndex;
-      isCode = false;
+    if (codeIndex !== -1 && (minIndex === -1 || codeIndex < minIndex)) {
+      minIndex = codeIndex;
+      matchType = 'code';
+    }
+    if (mathDollarIndex !== -1 && (minIndex === -1 || mathDollarIndex < minIndex)) {
+      minIndex = mathDollarIndex;
+      matchType = 'math_dollar';
+    }
+    if (mathBracketIndex !== -1 && (minIndex === -1 || mathBracketIndex < minIndex)) {
+      minIndex = mathBracketIndex;
+      matchType = 'math_bracket';
+    }
+    if (beginIndex !== -1 && (minIndex === -1 || beginIndex < minIndex)) {
+      minIndex = beginIndex;
+      matchType = 'math_begin';
     }
 
-    if (nextIndex === -1) {
+    if (minIndex === -1) {
       const remaining = text.substring(currentIndex);
       if (remaining) {
         blocks.push({ type: 'markdown', content: remaining });
@@ -77,15 +80,15 @@ function tokenizeBlocks(text: string): Block[] {
       break;
     }
 
-    if (nextIndex > currentIndex) {
-      const preceding = text.substring(currentIndex, nextIndex);
+    if (minIndex > currentIndex) {
+      const preceding = text.substring(currentIndex, minIndex);
       if (preceding) {
         blocks.push({ type: 'markdown', content: preceding });
       }
     }
 
-    if (isCode) {
-      const contentStart = nextIndex + 3;
+    if (matchType === 'code') {
+      const contentStart = minIndex + 3;
       const endCodeIndex = text.indexOf('```', contentStart);
       if (endCodeIndex === -1) {
         const codeContent = text.substring(contentStart);
@@ -116,8 +119,8 @@ function tokenizeBlocks(text: string): Block[] {
         blocks.push({ type: 'code', content: actualContent, language });
         currentIndex = endCodeIndex + 3;
       }
-    } else {
-      const contentStart = nextIndex + 2;
+    } else if (matchType === 'math_dollar') {
+      const contentStart = minIndex + 2;
       const endMathIndex = text.indexOf('$$', contentStart);
       if (endMathIndex === -1) {
         const mathContent = text.substring(contentStart);
@@ -128,6 +131,38 @@ function tokenizeBlocks(text: string): Block[] {
         blocks.push({ type: 'math', content: mathContent });
         currentIndex = endMathIndex + 2;
       }
+    } else if (matchType === 'math_bracket') {
+      const contentStart = minIndex + 2;
+      const endMathIndex = text.indexOf('\\]', contentStart);
+      if (endMathIndex === -1) {
+        const mathContent = text.substring(contentStart);
+        blocks.push({ type: 'math', content: mathContent });
+        break;
+      } else {
+        const mathContent = text.substring(contentStart, endMathIndex);
+        blocks.push({ type: 'math', content: mathContent });
+        currentIndex = endMathIndex + 2;
+      }
+    } else if (matchType === 'math_begin') {
+      const envStart = minIndex + 7;
+      const envEnd = text.indexOf('}', envStart);
+      if (envEnd !== -1) {
+        const envName = text.substring(envStart, envEnd).trim();
+        const endStr = `\\end{${envName}}`;
+        const endEnvIndex = text.indexOf(endStr, envEnd + 1);
+        if (endEnvIndex === -1) {
+          const mathContent = text.substring(minIndex);
+          blocks.push({ type: 'math', content: mathContent });
+          break;
+        } else {
+          const mathContent = text.substring(minIndex, endEnvIndex + endStr.length);
+          blocks.push({ type: 'math', content: mathContent });
+          currentIndex = endEnvIndex + endStr.length;
+        }
+      } else {
+        blocks.push({ type: 'markdown', content: text.substring(minIndex) });
+        break;
+      }
     }
   }
 
@@ -135,7 +170,7 @@ function tokenizeBlocks(text: string): Block[] {
 }
 
 // Inline LaTeX Math rendering component with graceful text fallback
-function MathComponent({ tex, displayMode }: { tex: string; displayMode: boolean; key?: React.Key }) {
+function MathComponent({ tex, displayMode, key }: { tex: string; displayMode: boolean; key?: React.Key }) {
   try {
     const html = katex.renderToString(tex, {
       displayMode,
@@ -143,6 +178,7 @@ function MathComponent({ tex, displayMode }: { tex: string; displayMode: boolean
     });
     return (
       <span 
+        key={key}
         className={displayMode ? "block my-3 overflow-x-auto py-1 max-w-full scrollbar-thin" : "inline-block px-0.5"} 
         dangerouslySetInnerHTML={{ __html: html }} 
       />
@@ -151,45 +187,89 @@ function MathComponent({ tex, displayMode }: { tex: string; displayMode: boolean
     console.warn("LaTeX rendering failed, using fallback:", error);
     if (displayMode) {
       return (
-        <div className="block my-3 font-mono text-xs text-indigo-300 bg-slate-950/50 p-2.5 rounded-lg border border-indigo-500/10 overflow-x-auto">
+        <div key={key} className="block my-3 font-mono text-xs text-indigo-300 bg-slate-950/50 p-2.5 rounded-lg border border-indigo-500/10 overflow-x-auto">
           {tex}
         </div>
       );
     }
-    return <span className="font-mono text-xs text-indigo-300">{tex}</span>;
+    return <span key={key} className="font-mono text-xs text-indigo-300">{tex}</span>;
   }
 }
 
-// Helper to parse inline elements like bold (**), italics (* or _), inline math ($), and code (`)
+// Helper to parse inline elements like bold (**), italics (* or _), inline math ($ or \(\)), code (`), links ([text](url)), and images (![alt](url))
 function parseInlineElements(text: string): React.ReactNode[] {
   if (!text) return [];
 
-  // Match: Inline math $...$, bold **...** or __...__, inline code `...`, italics *...* or _..._
-  const regex = /(\$(?!\$)[^\$]+\$|\*\*.*?\*\*|__.*?__|`.*?`|\*.*?\*|_.*?_)/g;
+  // Match: Images ![...](), Links [...](), Inline math \(...\) or $...$, bold **...** or __...__, inline code `...`, italics *...* or _..._
+  const regex = /(\!\[.*?\]\(.*?\)|\[.*?\]\(.*?\)|\\\([\s\S]*?\\\)|\$(?!\$)[^\$]+\$|\*\*.*?\*\*|__.*?__|`.*?`|\*.*?\*|_.*?_)/g;
   const parts = text.split(regex);
 
   return parts.map((part, i) => {
     if (!part) return null;
 
-    // 1. Inline math: $...$
+    // 1. Markdown Images: ![alt](url)
+    if (part.startsWith('![') && part.endsWith(')')) {
+      const match = part.match(/^!\[(.*?)\]\((.*?)\)$/);
+      if (match) {
+        const alt = match[1];
+        const url = match[2];
+        return (
+          <img
+            key={i}
+            src={url}
+            alt={alt}
+            referrerPolicy="no-referrer"
+            className="max-w-full h-auto rounded-xl border border-white/10 my-3.5 shadow-lg max-h-[350px] object-contain block mx-auto hover:scale-[1.01] transition-transform duration-300"
+          />
+        );
+      }
+    }
+
+    // 2. Markdown Links: [text](url)
+    if (part.startsWith('[') && part.endsWith(')')) {
+      const match = part.match(/^\[(.*?)\]\((.*?)\)$/);
+      if (match) {
+        const linkText = match[1];
+        const url = match[2];
+        return (
+          <a
+            key={i}
+            href={url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-indigo-400 hover:text-indigo-300 underline font-medium transition-colors cursor-pointer inline-flex items-center gap-0.5"
+          >
+            {parseInlineElements(linkText)}
+          </a>
+        );
+      }
+    }
+
+    // 3. Inline math: \(...\)
+    if (part.startsWith('\\(') && part.endsWith('\\)')) {
+      const tex = part.slice(2, -2);
+      return <MathComponent key={i} tex={tex} displayMode={false} />;
+    }
+
+    // 4. Inline math: $...$
     if (part.startsWith('$') && part.endsWith('$') && !part.startsWith('$$')) {
       const tex = part.slice(1, -1);
       return <MathComponent key={i} tex={tex} displayMode={false} />;
     }
 
-    // 2. Bold: **...** or __...__
+    // 5. Bold: **...** or __...__
     if ((part.startsWith('**') && part.endsWith('**')) || (part.startsWith('__') && part.endsWith('__'))) {
       const content = part.slice(2, -2);
       return <strong key={i} className="text-white font-bold font-sans">{parseInlineElements(content)}</strong>;
     }
 
-    // 3. Inline code: `...`
+    // 6. Inline code: `...`
     if (part.startsWith('`') && part.endsWith('`')) {
       const content = part.slice(1, -1);
       return <code key={i} className="px-1.5 py-0.5 bg-slate-950 text-indigo-300 font-mono text-xs rounded border border-white/5">{content}</code>;
     }
 
-    // 4. Italics: *...* or _..._
+    // 7. Italics: *...* or _..._
     if ((part.startsWith('*') && part.endsWith('*')) || (part.startsWith('_') && part.endsWith('_'))) {
       const content = part.slice(1, -1);
       return <em key={i} className="italic text-slate-300">{parseInlineElements(content)}</em>;
@@ -647,14 +727,12 @@ How can I help you today? You can **type any question about any topic** directly
     try {
       const contextPayload = getContextPayload();
 
-      // Detect Netlify environment where HTTP streaming is not supported (buffers chunks and times out or returns 404 router fallback)
-      const isNetlify = typeof window !== 'undefined' && (
-        window.location.hostname.endsWith('.netlify.app') || 
-        (!window.location.hostname.includes('.run.app') && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1')
-      );
+      // Use the unified server-side Express backend for secure, production-ready streaming
+      const targetUrl = getApiUrl('/api/tutor/chat');
+      const isNetlifyFunction = false;
 
-      // Send to server
-      const response = await fetch(getApiUrl('/.netlify/functions/chat'), {
+      // Send to server - always request streaming when calling our full-stack Express server
+      const response = await fetch(targetUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -662,7 +740,7 @@ How can I help you today? You can **type any question about any topic** directly
           mode: currentMode,
           learningSupport,
           context: contextPayload,
-          stream: !isNetlify
+          stream: !isNetlifyFunction
         })
       });
 
@@ -707,7 +785,7 @@ How can I help you today? You can **type any question about any topic** directly
         const decoder = new TextDecoder("utf-8");
         let streamText = '';
 
-        if (reader && !isNetlify) {
+        if (reader) {
           let isFirstRealChunk = true;
           try {
             while (true) {
