@@ -5,6 +5,7 @@ import {
   Trash2, MessageSquare, Plus, Check, ChevronRight, Bookmark, AlertCircle,
   Clock, ArrowRight, User, RefreshCw, Star, Info, FileText
 } from 'lucide-react';
+import katex from 'katex';
 import { Subject, Chapter, Topic, SavedNote, TutorSession, TutorChatMessage } from '../types';
 
 export const getApiUrl = (endpoint: string): string => {
@@ -32,84 +33,284 @@ interface AITutorViewProps {
   onNavigate: (view: 'dashboard' | 'tasks' | 'planner' | 'recall' | 'revision' | 'library' | 'import' | 'backup' | 'tutor', subTab?: string) => void;
 }
 
-// Inline formatting helper for bold (**text**), italics (_text_), and code (`code`)
-function parseBoldCodeAndItalics(text: string): React.ReactNode[] {
-  const regex = /(\*\*.*?\*\*|`.*?`|_.*?_)/g;
-  const matches = text.split(regex);
-  
-  return matches.map((part, i) => {
-    if (part.startsWith('**') && part.endsWith('**')) {
-      return <strong key={i} className="text-white font-bold font-sans">{part.slice(2, -2)}</strong>;
+// Interface for tokenized blocks (code blocks, display equations, standard text)
+interface Block {
+  type: 'code' | 'math' | 'markdown';
+  content: string;
+  language?: string;
+}
+
+// Tokenizes text into code blocks, math blocks, and markdown content blocks
+function tokenizeBlocks(text: string): Block[] {
+  const blocks: Block[] = [];
+  let currentIndex = 0;
+  const length = text.length;
+
+  while (currentIndex < length) {
+    const codeIndex = text.indexOf('```', currentIndex);
+    const mathIndex = text.indexOf('$$', currentIndex);
+
+    let nextIndex = -1;
+    let isCode = false;
+
+    if (codeIndex !== -1 && mathIndex !== -1) {
+      if (codeIndex < mathIndex) {
+        nextIndex = codeIndex;
+        isCode = true;
+      } else {
+        nextIndex = mathIndex;
+        isCode = false;
+      }
+    } else if (codeIndex !== -1) {
+      nextIndex = codeIndex;
+      isCode = true;
+    } else if (mathIndex !== -1) {
+      nextIndex = mathIndex;
+      isCode = false;
     }
+
+    if (nextIndex === -1) {
+      const remaining = text.substring(currentIndex);
+      if (remaining) {
+        blocks.push({ type: 'markdown', content: remaining });
+      }
+      break;
+    }
+
+    if (nextIndex > currentIndex) {
+      const preceding = text.substring(currentIndex, nextIndex);
+      if (preceding) {
+        blocks.push({ type: 'markdown', content: preceding });
+      }
+    }
+
+    if (isCode) {
+      const contentStart = nextIndex + 3;
+      const endCodeIndex = text.indexOf('```', contentStart);
+      if (endCodeIndex === -1) {
+        const codeContent = text.substring(contentStart);
+        const firstNewline = codeContent.indexOf('\n');
+        let language = '';
+        let actualContent = codeContent;
+        if (firstNewline !== -1) {
+          const possibleLang = codeContent.substring(0, firstNewline).trim();
+          if (possibleLang && /^[a-zA-Z0-9#+-]+$/.test(possibleLang)) {
+            language = possibleLang;
+            actualContent = codeContent.substring(firstNewline + 1);
+          }
+        }
+        blocks.push({ type: 'code', content: actualContent, language });
+        break;
+      } else {
+        const codeContent = text.substring(contentStart, endCodeIndex);
+        const firstNewline = codeContent.indexOf('\n');
+        let language = '';
+        let actualContent = codeContent;
+        if (firstNewline !== -1) {
+          const possibleLang = codeContent.substring(0, firstNewline).trim();
+          if (possibleLang && /^[a-zA-Z0-9#+-]+$/.test(possibleLang)) {
+            language = possibleLang;
+            actualContent = codeContent.substring(firstNewline + 1);
+          }
+        }
+        blocks.push({ type: 'code', content: actualContent, language });
+        currentIndex = endCodeIndex + 3;
+      }
+    } else {
+      const contentStart = nextIndex + 2;
+      const endMathIndex = text.indexOf('$$', contentStart);
+      if (endMathIndex === -1) {
+        const mathContent = text.substring(contentStart);
+        blocks.push({ type: 'math', content: mathContent });
+        break;
+      } else {
+        const mathContent = text.substring(contentStart, endMathIndex);
+        blocks.push({ type: 'math', content: mathContent });
+        currentIndex = endMathIndex + 2;
+      }
+    }
+  }
+
+  return blocks;
+}
+
+// Inline LaTeX Math rendering component with graceful text fallback
+function MathComponent({ tex, displayMode }: { tex: string; displayMode: boolean; key?: React.Key }) {
+  try {
+    const html = katex.renderToString(tex, {
+      displayMode,
+      throwOnError: true,
+    });
+    return (
+      <span 
+        className={displayMode ? "block my-3 overflow-x-auto py-1 max-w-full scrollbar-thin" : "inline-block px-0.5"} 
+        dangerouslySetInnerHTML={{ __html: html }} 
+      />
+    );
+  } catch (error) {
+    console.warn("LaTeX rendering failed, using fallback:", error);
+    if (displayMode) {
+      return (
+        <div className="block my-3 font-mono text-xs text-indigo-300 bg-slate-950/50 p-2.5 rounded-lg border border-indigo-500/10 overflow-x-auto">
+          {tex}
+        </div>
+      );
+    }
+    return <span className="font-mono text-xs text-indigo-300">{tex}</span>;
+  }
+}
+
+// Helper to parse inline elements like bold (**), italics (* or _), inline math ($), and code (`)
+function parseInlineElements(text: string): React.ReactNode[] {
+  if (!text) return [];
+
+  // Match: Inline math $...$, bold **...** or __...__, inline code `...`, italics *...* or _..._
+  const regex = /(\$(?!\$)[^\$]+\$|\*\*.*?\*\*|__.*?__|`.*?`|\*.*?\*|_.*?_)/g;
+  const parts = text.split(regex);
+
+  return parts.map((part, i) => {
+    if (!part) return null;
+
+    // 1. Inline math: $...$
+    if (part.startsWith('$') && part.endsWith('$') && !part.startsWith('$$')) {
+      const tex = part.slice(1, -1);
+      return <MathComponent key={i} tex={tex} displayMode={false} />;
+    }
+
+    // 2. Bold: **...** or __...__
+    if ((part.startsWith('**') && part.endsWith('**')) || (part.startsWith('__') && part.endsWith('__'))) {
+      const content = part.slice(2, -2);
+      return <strong key={i} className="text-white font-bold font-sans">{parseInlineElements(content)}</strong>;
+    }
+
+    // 3. Inline code: `...`
     if (part.startsWith('`') && part.endsWith('`')) {
-      return <code key={i} className="px-1.5 py-0.5 bg-slate-950 text-indigo-300 font-mono text-xs rounded border border-white/5">{part.slice(1, -1)}</code>;
+      const content = part.slice(1, -1);
+      return <code key={i} className="px-1.5 py-0.5 bg-slate-950 text-indigo-300 font-mono text-xs rounded border border-white/5">{content}</code>;
     }
-    if (part.startsWith('_') && part.endsWith('_')) {
-      return <em key={i} className="italic text-slate-300">{part.slice(1, -1)}</em>;
+
+    // 4. Italics: *...* or _..._
+    if ((part.startsWith('*') && part.endsWith('*')) || (part.startsWith('_') && part.endsWith('_'))) {
+      const content = part.slice(1, -1);
+      return <em key={i} className="italic text-slate-300">{parseInlineElements(content)}</em>;
     }
+
     return part;
   });
 }
 
+// Polished markdown and LaTeX block/inline renderer
 function MarkdownRenderer({ text }: { text: string }) {
-  const lines = text.split('\n');
+  if (!text) return null;
+
+  const blocks = tokenizeBlocks(text);
+
   return (
-    <div className="space-y-2 text-xs sm:text-sm text-slate-200 leading-relaxed font-sans">
-      {lines.map((line, idx) => {
-        const trimmed = line.trim();
-        
-        // Headers
-        if (trimmed.startsWith('###')) {
-          return <h4 key={idx} className="text-sm font-bold text-white pt-2 border-b border-white/5 pb-1 flex items-center gap-1.5">{trimmed.replace('###', '').trim()}</h4>;
-        }
-        if (trimmed.startsWith('##')) {
-          return <h3 key={idx} className="text-xs sm:text-sm font-bold text-indigo-400 pt-3 uppercase tracking-wider">{trimmed.replace('##', '').trim()}</h3>;
-        }
-        if (trimmed.startsWith('#')) {
-          return <h2 key={idx} className="text-base font-display font-bold text-white pt-4 pb-1 border-b border-indigo-500/20">{trimmed.replace('#', '').trim()}</h2>;
-        }
-
-        // Horizontal rules
-        if (trimmed === '---') {
-          return <div key={idx} className="my-3 border-t border-white/10" />;
-        }
-
-        // List items
-        if (trimmed.startsWith('- ') || trimmed.startsWith('* ')) {
-          const itemText = trimmed.substring(2);
+    <div className="space-y-2.5 text-xs sm:text-sm text-slate-200 leading-relaxed font-sans max-w-full overflow-hidden">
+      {blocks.map((block, bIdx) => {
+        if (block.type === 'code') {
           return (
-            <div key={idx} className="flex items-start gap-2 pl-2">
-              <span className="text-indigo-400 select-none mt-1.5 text-[8px] shrink-0">●</span>
-              <span>{parseBoldCodeAndItalics(itemText)}</span>
+            <div key={bIdx} className="my-3 rounded-xl border border-white/10 overflow-hidden shadow-lg bg-slate-950">
+              <div className="flex items-center justify-between px-4 py-1.5 bg-slate-900 border-b border-white/5 text-[10px] text-slate-400 font-mono select-none">
+                <span>{block.language || 'code'}</span>
+                <button
+                  onClick={(e) => {
+                    navigator.clipboard.writeText(block.content);
+                    const btn = e.currentTarget;
+                    btn.innerText = 'Copied!';
+                    setTimeout(() => { btn.innerText = 'Copy'; }, 2000);
+                  }}
+                  className="hover:text-white transition-colors cursor-pointer"
+                >
+                  Copy
+                </button>
+              </div>
+              <pre className="p-4 overflow-x-auto text-xs font-mono text-emerald-400 leading-relaxed max-w-full">
+                <code>{block.content}</code>
+              </pre>
             </div>
           );
         }
 
-        // Numeric line lists
-        const matchNum = trimmed.match(/^(\d+)\.\s(.*)/);
-        if (matchNum) {
-          return (
-            <div key={idx} className="flex items-start gap-2 pl-2">
-              <span className="font-mono text-xs text-indigo-400 select-none shrink-0">{matchNum[1]}.</span>
-              <span>{parseBoldCodeAndItalics(matchNum[2])}</span>
-            </div>
-          );
+        if (block.type === 'math') {
+          return <MathComponent key={bIdx} tex={block.content} displayMode={true} />;
         }
 
-        // Blockquotes
-        if (trimmed.startsWith('>')) {
-          return (
-            <blockquote key={idx} className="pl-3.5 py-1 border-l-2 border-indigo-500 bg-white/5 text-slate-300 italic my-1 rounded-r-lg text-xs leading-relaxed">
-              {parseBoldCodeAndItalics(trimmed.replace(/^>\s*/, ''))}
-            </blockquote>
-          );
-        }
+        const lines = block.content.split('\n');
+        return (
+          <React.Fragment key={bIdx}>
+            {lines.map((line, idx) => {
+              const leadingSpaces = line.search(/\S/);
+              const trimmed = line.trim();
+              const indentClass = leadingSpaces > 4 ? "pl-8" : leadingSpaces > 1 ? "pl-4" : "pl-1";
 
-        if (trimmed === '') {
-          return <div key={idx} className="h-1.5" />;
-        }
+              // Headers
+              if (trimmed.startsWith('###')) {
+                return (
+                  <h4 key={idx} className="text-xs sm:text-sm font-bold text-white pt-2.5 pb-1 flex items-center gap-1.5 font-sans">
+                    {parseInlineElements(trimmed.replace('###', '').trim())}
+                  </h4>
+                );
+              }
+              if (trimmed.startsWith('##')) {
+                return (
+                  <h3 key={idx} className="text-xs sm:text-sm font-bold text-indigo-300 pt-3.5 pb-1 uppercase tracking-wider font-sans">
+                    {parseInlineElements(trimmed.replace('##', '').trim())}
+                  </h3>
+                );
+              }
+              if (trimmed.startsWith('#')) {
+                return (
+                  <h2 key={idx} className="text-sm sm:text-base font-bold text-white pt-4 pb-1 border-b border-indigo-500/20 font-sans">
+                    {parseInlineElements(trimmed.replace('#', '').trim())}
+                  </h2>
+                );
+              }
 
-        return <p key={idx}>{parseBoldCodeAndItalics(line)}</p>;
+              // Horizontal rule
+              if (trimmed === '---') {
+                return <div key={idx} className="my-3 border-t border-white/10" />;
+              }
+
+              // Bullet lists
+              if (trimmed.startsWith('- ') || trimmed.startsWith('* ') || trimmed.startsWith('+ ')) {
+                const itemText = trimmed.substring(2);
+                return (
+                  <div key={idx} className={`flex items-start gap-2 ${indentClass} my-0.5`}>
+                    <span className="text-indigo-400 select-none mt-1.5 text-[8px] shrink-0">●</span>
+                    <span className="text-xs sm:text-sm">{parseInlineElements(itemText)}</span>
+                  </div>
+                );
+              }
+
+              // Numbered lists
+              const matchNum = trimmed.match(/^(\d+)\.\s(.*)/);
+              if (matchNum) {
+                return (
+                  <div key={idx} className={`flex items-start gap-2 ${indentClass} my-0.5`}>
+                    <span className="font-mono text-xs text-indigo-400 select-none shrink-0">{matchNum[1]}.</span>
+                    <span className="text-xs sm:text-sm">{parseInlineElements(matchNum[2])}</span>
+                  </div>
+                );
+              }
+
+              // Blockquotes
+              if (trimmed.startsWith('>')) {
+                return (
+                  <blockquote key={idx} className="pl-3.5 py-1 border-l-2 border-indigo-500 bg-white/5 text-slate-300 italic my-1 rounded-r-lg text-xs sm:text-sm leading-relaxed">
+                    {parseInlineElements(trimmed.replace(/^>\s*/, ''))}
+                  </blockquote>
+                );
+              }
+
+              if (trimmed === '') {
+                return <div key={idx} className="h-1.5" />;
+              }
+
+              return <p key={idx} className="text-xs sm:text-sm my-0.5 leading-relaxed">{parseInlineElements(line)}</p>;
+            })}
+          </React.Fragment>
+        );
       })}
     </div>
   );

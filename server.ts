@@ -614,10 +614,12 @@ Context details (Ignore if empty or if user is asking general questions):
 ${contextNotes ? `\nStudy Notes:\n${contextNotes}\n` : ''}
 ${additionalMaterial ? `\nRelated Flashcards/Recall Material:\n${additionalMaterial}\n` : ''}
 
-Behavior / Speed Rules:
-1. Answer directly and immediately. DO NOT waste output on welcoming introductions in every response (e.g. do not say "Hello, in this session, we will look at..."). Start answering the student's question to keep the chat lightning-fast.
-2. Structure replies with clean, beautiful Markdown text (use headers like ###, standard bolding **, lists, and code blocks \`\`).
-3. Keep accuracy and didactic quality very high. Always maintain an encouraging, smart, helpful tutor persona.
+Behavior, Formatting & Speed Rules:
+1. Use plain, friendly language by default for normal conversation.
+2. Structure replies with clean, beautiful Markdown text (use headers like ###, standard bolding **, lists, blockquotes, and code blocks \`\`).
+3. Only use LaTeX math expressions (inline math using $...$ and block equations using $$...$$) when explaining mathematics, physics, chemistry, economics, or other technical subjects where equations are essential to improve understanding. Avoid unnecessary LaTeX for normal conversation.
+4. Answer directly and immediately. DO NOT waste output on welcoming introductions in every response (e.g. do not say "Hello, in this session, we will look at..."). Start answering the student's question to keep the chat lightning-fast.
+5. Keep accuracy and didactic quality very high. Always maintain an encouraging, smart, helpful tutor persona.
 `;
 
     // Map conversation messages to Gemini's expected contents format
